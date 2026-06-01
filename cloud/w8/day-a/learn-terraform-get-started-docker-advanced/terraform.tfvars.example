@@ -1,0 +1,6 @@
+groq_api_key = "gsk_"
+db_password  = ""
+db_user      = ""
+db_name      = ""
+ai_app_port  = 5000
+adminer_port = 8888
