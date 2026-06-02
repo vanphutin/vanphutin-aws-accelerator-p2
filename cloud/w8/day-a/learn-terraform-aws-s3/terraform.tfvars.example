@@ -1,0 +1,5 @@
+aws_region        = "ap-southeast-1"
+environment       = "dev"
+project_name      = "aws-s3-lab"
+bucket_prefix     = "vanphutin"
+s3_encryption_key = "your_s3_encryption_key_here" # Điền mã khóa bí mật của bạn tại đây để bảo mật
