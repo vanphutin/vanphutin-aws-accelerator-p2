@@ -23,8 +23,9 @@ Dưới đây là sơ đồ danh mục các tài liệu và bài lab được th
 | **1** | **Khái niệm & Định nghĩa** | [define.md](./define.md) | Định nghĩa IaC, Terraform core, Providers, Modules, Resources, Backend, State và cách thức hoạt động. |
 | **2** | **Quy trình & Lệnh cơ bản** | [development.md](./development.md) | Chi tiết về quy trình 4 bước tiêu chuẩn (`init`, `validate`, `plan`, `apply`, `destroy`) và các tùy chọn CLI phổ biến. |
 | **3** | **Tiêu chuẩn viết mã (Best Practices)** | [writing-rules.md](./writing-rules.md) | Quy tắc đặt tên `snake_case`, cấu trúc thư mục tiêu chuẩn, bảo mật Secrets (`sensitive`), và tối ưu `lifecycle` blocks. |
-| **4** | **Bài thực hành Cơ bản (Basic Lab)** | [LAB_BASIC-learn-terraform-get-started-docker.md](./LAB_BASIC-learn-terraform-get-started-docker.md) | **[100% Cục bộ]** Tự động tạo file HTML cá nhân hóa, tải Nginx image, chạy container Nginx và mount website lên local. |
-| **5** | **Bài thực hành Nâng cao (Advanced Lab)** | [lab-advanced.md](./lab-advanced.md) | Thiết lập hệ thống Multi-Tier AI Chatbot tích hợp Groq Llama3 + PostgreSQL DB + Adminer Web UI đạt chuẩn DevOps thực tế. |
+| **4** | **Các đối số Meta-arguments** | [Meta-Arguments.md](./Meta-Arguments.md) | Hướng dẫn chi tiết về 5 đối số đặc biệt của HCL: `depends_on`, `count`, `for_each`, `provider`, và `lifecycle`. |
+| **5** | **Bài thực hành Cơ bản (Basic Lab)** | [LAB_BASIC-learn-terraform-get-started-docker.md](./LAB_BASIC-learn-terraform-get-started-docker.md) | **[100% Cục bộ]** Tự động tạo file HTML cá nhân hóa, tải Nginx image, chạy container Nginx và mount website lên local. |
+| **6** | **Bài thực hành Nâng cao (Advanced Lab)** | [LAB-ADVANCED-learn-terraform-get-started-docker-advanced.md](./LAB-ADVANCED-learn-terraform-get-started-docker-advanced.md) | Thiết lập hệ thống Multi-Tier AI Chatbot tích hợp Groq Llama3 + PostgreSQL DB + Adminer Web UI đạt chuẩn DevOps thực tế. |
 
 ---
 

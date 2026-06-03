@@ -170,3 +170,19 @@ Tài liệu này giúp người dùng:
 
 > [!TIP]
 > Để truy cập, bạn có thể tìm kiếm "Terraform Language Documentation" trên trang web chính thức của HashiCorp hoặc HashiCorp Terraform Registry.
+
+---
+
+## 6. Các đối số đặc biệt (Meta-arguments)
+
+Ngoài các thuộc tính riêng của từng tài nguyên, Terraform cung cấp một số đối số đặc biệt gọi là **Meta-arguments** có thể được sử dụng trong mọi khối `resource` hoặc `module` để thay đổi hành vi triển khai:
+
+*   **`depends_on`**: Khai báo phụ thuộc rõ ràng (Explicit Dependency) giữa các tài nguyên.
+*   **`count`**: Tạo nhiều bản sao tài nguyên theo số lượng chỉ định (index-based).
+*   **`for_each`**: Tạo nhiều bản sao tài nguyên dựa trên một `set` hoặc `map` (key-based).
+*   **`provider`**: Lựa chọn cấu hình Provider không mặc định (thông qua `alias`).
+*   **`lifecycle`**: Tùy chỉnh vòng đời của tài nguyên (ví dụ: `create_before_destroy`, `prevent_destroy`, `ignore_changes`).
+
+> [!TIP]
+> Để tìm hiểu chi tiết cách hoạt động, ví dụ thực tế và các lưu ý quan trọng của các đối số này, hãy tham khảo tài liệu hướng dẫn chuyên sâu: [Meta-Arguments.md](./Meta-Arguments.md).
+
