@@ -1,0 +1,15 @@
+services:
+  gitlab:
+    image: gitlab/gitlab-ce:latest
+    hostname: gitlab.local
+    ports:
+      - "8088:80"
+      - "2222:22"
+    volumes:
+      - gitlab-config:/etc/gitlab
+      - gitlab-logs:/var/log/gitlab
+      - gitlab-data:/var/opt/gitlab
+volumes:
+  gitlab-config:
+  gitlab-logs:
+  gitlab-data:

@@ -1,0 +1,6 @@
+hostname: harbor.local
+http:
+  port: 80
+harbor_admin_password: Harbor12345
+database:
+  password: root123
