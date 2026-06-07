@@ -4,10 +4,11 @@ Bộ tài liệu này được xây dựng lại từ lộ trình 20 bài Kubern
 
 ## Lộ trình học
 
-Học theo thứ tự từ 01 tới 20. Các bài đầu tạo nền móng về Pod, cluster và kubectl. Nhóm giữa tập trung vào cấu hình, multi-container Pod, observability và thiết kế Pod. Nhóm cuối xử lý networking, storage và chiến thuật thi CKAD.
+Học chương 00 trước để nắm cách viết YAML, cấu trúc manifest và best practices tổ chức file. Sau đó học theo thứ tự từ 01 tới 20. Các bài đầu tạo nền móng về Pod, cluster và kubectl. Nhóm giữa tập trung vào cấu hình, multi-container Pod, observability và thiết kế Pod. Nhóm cuối xử lý networking, storage và chiến thuật thi CKAD.
 
 | Thứ tự | Bài học | Domain | Trọng tâm |
 |---:|---|---|---|
+| 0 | [Cách viết YAML, tổ chức manifest và best practices](./00-yaml-manifest-best-practices/README.md) | YAML & Manifest Design | Học cách viết file YAML, cấu trúc manifest Kubernetes, tổ chức thư mục, labels/selectors và quy trình validate/apply/debug. |
 | 1 | [Giới thiệu Kubernetes và khái niệm Cluster cho CKAD](./01-introduction/README.md) | Core Concepts | Kubernetes là nền tảng điều phối container, cluster, node, pod, control plane và worker node. |
 | 2 | [Cài đặt Minikube và sử dụng kubectl cơ bản](./02-installation/README.md) | Core Concepts | Thiết lập cluster local bằng Minikube, cấu hình kubectl, context, namespace và thao tác CRUD cơ bản. |
 | 3 | [Quản lý Pod cơ bản: create, delete, describe](./03-pods/README.md) | Core Concepts | Tạo Pod bằng lệnh và YAML, đọc phase, condition, restart count, event và xóa tài nguyên đúng cách. |
@@ -33,7 +34,8 @@ Học theo thứ tự từ 01 tới 20. Các bài đầu tạo nền móng về 
 
 ```mermaid
 graph TD
-  A[Core Concepts] --> B[Configuration]
+  Z[YAML & Manifest Design] --> A[Core Concepts]
+  A --> B[Configuration]
   B --> C[Multi-Container Pods]
   C --> D[Observability]
   D --> E[Pod Design]
@@ -44,15 +46,17 @@ graph TD
 
 ## Thứ tự học
 
-1. Đọc mục Mục tiêu và Kiến thức nền tảng.
-2. Gõ lại YAML, không chỉ copy.
-3. Apply vào namespace riêng.
-4. Verify bằng `kubectl get`, `describe`, `logs`, `exec`.
-5. Cố tình tạo một lỗi nhỏ để luyện troubleshooting.
-6. Dọn dẹp tài nguyên trước khi sang bài tiếp theo.
+1. Đọc chương 00 để nắm YAML, manifest structure và cách tổ chức file.
+2. Đọc mục Mục tiêu và Kiến thức nền tảng của từng bài.
+3. Gõ lại YAML, không chỉ copy.
+4. Apply vào namespace riêng.
+5. Verify bằng `kubectl get`, `describe`, `logs`, `exec`.
+6. Cố tình tạo một lỗi nhỏ để luyện troubleshooting.
+7. Dọn dẹp tài nguyên trước khi sang bài tiếp theo.
 
 ## Checklist hoàn thành
 
+- [ ] Chương 00: [Cách viết YAML, tổ chức manifest và best practices](./00-yaml-manifest-best-practices/README.md)
 - [ ] Bài 01: [Giới thiệu Kubernetes và khái niệm Cluster cho CKAD](./01-introduction/README.md)
 - [ ] Bài 02: [Cài đặt Minikube và sử dụng kubectl cơ bản](./02-installation/README.md)
 - [ ] Bài 03: [Quản lý Pod cơ bản: create, delete, describe](./03-pods/README.md)
@@ -73,7 +77,6 @@ graph TD
 - [ ] Bài 18: [Sử dụng Volume: emptyDir và hostPath](./18-volumes/README.md)
 - [ ] Bài 19: [Cấu hình PersistentVolume và PersistentVolumeClaim](./19-pv-pvc/README.md)
 - [ ] Bài 20: [Tổng kết, mẹo thi CKAD và bài tập thực hành cuối](./20-ckad-preparation/README.md)
-
 ## Hướng dẫn luyện CKAD
 
 Luyện CKAD cần tốc độ và độ chính xác. Hãy cấu hình alias `k=kubectl`, bật completion nếu môi trường cho phép, dùng `--dry-run=client -o yaml` để sinh manifest, và luôn kiểm tra namespace trước khi làm bài. Với mỗi task, hãy đọc yêu cầu, tạo file YAML, apply, verify, rồi chuyển câu. Đừng dành quá lâu cho một lỗi nếu bạn có thể quay lại sau.
