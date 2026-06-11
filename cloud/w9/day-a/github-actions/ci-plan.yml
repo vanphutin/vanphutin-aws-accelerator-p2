@@ -1,0 +1,129 @@
+name: "CI kiểm tra kế hoạch"
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "cloud/w9/**"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Hủy run cũ trên cùng một PR để reviewer chỉ xem kết quả mới nhất.
+concurrency:
+  group: ci-plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  SERVICE_NAME: api-service
+  NAMESPACE: platform
+  HELM_CHART_PATH: cloud/w9/day-a/charts/api-service
+
+jobs:
+  yamllint:
+    name: "Kiểm tra định dạng YAML"
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Lấy mã nguồn"
+        uses: actions/checkout@v4
+
+      - name: "Cài yamllint"
+        run: python -m pip install --upgrade yamllint==1.35.1
+
+      - name: "Chạy yamllint"
+        run: >
+          yamllint
+          -d "{extends: default, rules: {line-length: disable, truthy: disable}}"
+          cloud/w9/day-a
+
+  kubeval:
+    name: "Kiểm tra manifest Kubernetes"
+    runs-on: ubuntu-latest
+    needs: yamllint
+    steps:
+      - name: "Lấy mã nguồn"
+        uses: actions/checkout@v4
+
+      - name: "Cài kubeval"
+        run: |
+          set -euo pipefail
+          curl --fail --location --output kubeval.tar.gz \
+            https://github.com/instrumenta/kubeval/releases/download/0.16.1/kubeval-linux-amd64.tar.gz
+          tar -xzf kubeval.tar.gz kubeval
+          sudo install kubeval /usr/local/bin/kubeval
+
+      - name: "Kiểm tra YAML workload và ArgoCD"
+        run: |
+          set -euo pipefail
+          find cloud/w9/day-a/argocd cloud/w9/day-a/workloads \
+            -name '*.yaml' -print0 \
+            | xargs -0 kubeval --ignore-missing-schemas --strict
+
+  helm-diff:
+    name: "Tạo Helm diff và bình luận vào PR"
+    runs-on: ubuntu-latest
+    needs: kubeval
+    steps:
+      - name: "Lấy mã nguồn"
+        uses: actions/checkout@v4
+
+      - name: "Cài Helm"
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.15.4
+
+      - name: "Cài plugin helm-diff"
+        run: helm plugin install https://github.com/databus23/helm-diff --version v3.9.10
+
+      - name: "Chạy helm diff"
+        id: helm_diff
+        run: |
+          set +e
+          mkdir -p /tmp/helm-diff
+          helm diff upgrade "$SERVICE_NAME" "$HELM_CHART_PATH" \
+            --install \
+            --namespace "$NAMESPACE" \
+            --values "$HELM_CHART_PATH/values.yaml" \
+            --allow-unreleased \
+            --detailed-exitcode \
+            --color=false \
+            > /tmp/helm-diff/output.txt
+          status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$status" -eq 2 ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cat /tmp/helm-diff/output.txt
+          exit "$status"
+
+      - name: "Đăng Helm diff vào PR"
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const diffPath = '/tmp/helm-diff/output.txt';
+            const diff = fs.existsSync(diffPath)
+              ? fs.readFileSync(diffPath, 'utf8')
+              : 'Không có output từ helm diff.';
+            const body = [
+              '## Helm diff cho `api-service`',
+              '',
+              'Workflow này chỉ hiển thị thay đổi dự kiến, chưa deploy vào cluster.',
+              '',
+              '```diff',
+              diff.slice(0, 60000),
+              '```'
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });

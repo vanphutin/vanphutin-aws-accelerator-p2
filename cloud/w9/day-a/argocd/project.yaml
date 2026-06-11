@@ -1,0 +1,38 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: platform
+  namespace: argocd
+spec:
+  description: "Giới hạn GitOps cho workload platform trên cluster local-dev"
+  # Chỉ cho phép ArgoCD đọc manifest từ repository đào tạo này.
+  sourceRepos:
+    - https://github.com/vanphutin/vanphutin-aws-accelerator-p2.git
+  # Chỉ cho phép project deploy vào namespace platform của in-cluster Kubernetes API.
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: platform
+    - server: https://kubernetes.default.svc
+      namespace: argocd
+  # Cho phép tạo Namespace vì đây là resource ở phạm vi cluster.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  # Cho phép các resource namespace-scoped cần cho lab như Deployment, Service, StatefulSet.
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  roles:
+    - name: read-only
+      description: "Quyền chỉ đọc cho người học"
+      policies:
+        - p, proj:platform:read-only, applications, get, platform/*, allow
+      groups:
+        - platform:readers
+    - name: deployer
+      description: "Quyền sync cho người vận hành platform"
+      policies:
+        - p, proj:platform:deployer, applications, get, platform/*, allow
+        - p, proj:platform:deployer, applications, sync, platform/*, allow
+      groups:
+        - platform:deployers

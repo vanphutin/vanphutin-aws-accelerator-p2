@@ -1,0 +1,54 @@
+name: "Thông báo Slack dùng lại"
+
+on:
+  workflow_call:
+    inputs:
+      status:
+        description: "Trạng thái cuối của workflow hoặc deployment."
+        required: true
+        type: string
+      service_name:
+        description: "Tên service hiển thị trong tin nhắn Slack."
+        required: true
+        type: string
+      environment:
+        description: "Tên môi trường hiển thị trong tin nhắn Slack."
+        required: true
+        type: string
+    secrets:
+      SLACK_WEBHOOK_URL:
+        description: "URL incoming webhook của Slack."
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    name: "Gửi thông báo Slack"
+    runs-on: ubuntu-latest
+    steps:
+      - name: "Gọi Slack webhook"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          STATUS: ${{ inputs.status }}
+          SERVICE_NAME: ${{ inputs.service_name }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          color="good"
+          if [ "$STATUS" != "success" ]; then
+            color="danger"
+          fi
+          payload=$(jq -n \
+            --arg color "$color" \
+            --arg status "$STATUS" \
+            --arg service "$SERVICE_NAME" \
+            --arg env "$ENVIRONMENT" \
+            --arg run_url "$RUN_URL" \
+            '{attachments:[{color:$color,text:("Service `" + $service + "` trong môi trường `" + $env + "` kết thúc với trạng thái `" + $status + "`.\nRun: " + $run_url)}]}')
+          curl --fail --silent --show-error \
+            --header 'Content-Type: application/json' \
+            --data "$payload" \
+            "$SLACK_WEBHOOK_URL"

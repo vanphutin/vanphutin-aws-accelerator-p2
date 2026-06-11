@@ -1,0 +1,61 @@
+name: "CI áp dụng thay đổi"
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "cloud/w9/**"
+      - ".github/workflows/**"
+
+permissions:
+  contents: read
+  id-token: write
+
+# Không hủy deploy production đang chạy dở; chạy tuần tự theo nhánh main.
+concurrency:
+  group: ci-apply-main
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  SERVICE_NAME: api-service
+  NAMESPACE: platform
+  HELM_CHART_PATH: cloud/w9/day-a/charts/api-service
+
+jobs:
+  helm-upgrade:
+    name: "Triển khai bằng Helm"
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://api-service.example.com
+    steps:
+      - name: "Lấy mã nguồn"
+        uses: actions/checkout@v4
+
+      - name: "Lấy credential AWS tạm thời bằng OIDC"
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: "Cài Helm"
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.15.4
+
+      - name: "Cấu hình kubeconfig từ EKS"
+        run: aws eks update-kubeconfig --region "$AWS_REGION" --name local-dev
+
+      - name: "Helm upgrade có rollback tự động"
+        run: |
+          set -euo pipefail
+          helm upgrade "$SERVICE_NAME" "$HELM_CHART_PATH" \
+            --install \
+            --namespace "$NAMESPACE" \
+            --create-namespace \
+            --values "$HELM_CHART_PATH/values.yaml" \
+            --atomic \
+            --timeout 5m \
+            --history-max 10
