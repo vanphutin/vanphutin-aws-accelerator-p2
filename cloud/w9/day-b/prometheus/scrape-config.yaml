@@ -1,0 +1,60 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+rule_files:
+  - /etc/prometheus/rules/*.yaml
+
+scrape_configs:
+  # Kubernetes pod autodiscovery: chỉ scrape pod có annotation prometheus.io/scrape=true.
+  - job_name: kubernetes-pods
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      - source_labels:
+          - __meta_kubernetes_pod_annotation_prometheus_io_scrape
+        action: keep
+        regex: "true"
+      - source_labels:
+          - __meta_kubernetes_pod_annotation_prometheus_io_path
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels:
+          - __address__
+          - __meta_kubernetes_pod_annotation_prometheus_io_port
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - source_labels:
+          - __meta_kubernetes_namespace
+        action: replace
+        target_label: namespace
+      - source_labels:
+          - __meta_kubernetes_pod_label_app_kubernetes_io_name
+        action: replace
+        target_label: service
+      - source_labels:
+          - __meta_kubernetes_pod_name
+        action: replace
+        target_label: pod
+
+  # Node exporter cung cấp metrics hạ tầng của node.
+  - job_name: node-exporter
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)
+      - target_label: __address__
+        replacement: node-exporter.monitoring.svc.cluster.local:9100
+
+  # Self-metrics của OTel Collector để biết pipeline có drop dữ liệu không.
+  - job_name: otel-collector
+    static_configs:
+      - targets:
+          - otel-collector.platform.svc.cluster.local:8888
+        labels:
+          namespace: platform
+          service: otel-collector

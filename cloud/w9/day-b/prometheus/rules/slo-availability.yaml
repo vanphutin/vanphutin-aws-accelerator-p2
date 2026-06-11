@@ -1,0 +1,122 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: api-service-slo-availability
+  namespace: platform
+  labels:
+    prometheus: platform
+    role: alert-rules
+spec:
+  groups:
+    - name: api-service.availability.slo
+      interval: 30s
+      rules:
+        # Tổng request trong 5 phút, dùng làm mẫu số cho error ratio.
+        - record: service:http_requests:rate5m
+          expr: |
+            sum by (namespace, service) (
+              rate(http_requests_total{namespace="platform",service="api-service"}[5m])
+            )
+        # Request lỗi 5xx trong 5 phút, dùng làm tử số cho error ratio.
+        - record: service:http_errors:rate5m
+          expr: |
+            sum by (namespace, service) (
+              rate(http_requests_total{namespace="platform",service="api-service",status_code=~"5.."}[5m])
+            )
+        # Tỷ lệ lỗi 5 phút, clamp mẫu số để tránh chia cho 0 khi không có traffic.
+        - record: service:availability_error_ratio:rate5m
+          expr: |
+            service:http_errors:rate5m
+            /
+            clamp_min(service:http_requests:rate5m, 0.001)
+
+        # Tổng request trong 30 phút để xem xu hướng trung hạn.
+        - record: service:http_requests:rate30m
+          expr: |
+            sum by (namespace, service) (
+              rate(http_requests_total{namespace="platform",service="api-service"}[30m])
+            )
+        # Request lỗi 5xx trong 30 phút.
+        - record: service:http_errors:rate30m
+          expr: |
+            sum by (namespace, service) (
+              rate(http_requests_total{namespace="platform",service="api-service",status_code=~"5.."}[30m])
+            )
+        # Tỷ lệ lỗi 30 phút.
+        - record: service:availability_error_ratio:rate30m
+          expr: |
+            service:http_errors:rate30m
+            /
+            clamp_min(service:http_requests:rate30m, 0.001)
+
+        # Tổng request trong 1 giờ, dùng cho fast burn alert.
+        - record: service:http_requests:rate1h
+          expr: |
+            sum by (namespace, service) (
+              rate(http_requests_total{namespace="platform",service="api-service"}[1h])
+            )
+        # Request lỗi 5xx trong 1 giờ.
+        - record: service:http_errors:rate1h
+          expr: |
+            sum by (namespace, service) (
+              rate(http_requests_total{namespace="platform",service="api-service",status_code=~"5.."}[1h])
+            )
+        # Tỷ lệ lỗi 1 giờ.
+        - record: service:availability_error_ratio:rate1h
+          expr: |
+            service:http_errors:rate1h
+            /
+            clamp_min(service:http_requests:rate1h, 0.001)
+        # Burn rate 1 giờ cho SLO 99.9%, error budget ratio là 0.001.
+        - record: service:availability_burn_rate:1h
+          expr: |
+            service:availability_error_ratio:rate1h / 0.001
+
+        # Tổng request trong 6 giờ, dùng cho slow burn alert.
+        - record: service:http_requests:rate6h
+          expr: |
+            sum by (namespace, service) (
+              rate(http_requests_total{namespace="platform",service="api-service"}[6h])
+            )
+        # Request lỗi 5xx trong 6 giờ.
+        - record: service:http_errors:rate6h
+          expr: |
+            sum by (namespace, service) (
+              rate(http_requests_total{namespace="platform",service="api-service",status_code=~"5.."}[6h])
+            )
+        # Tỷ lệ lỗi 6 giờ.
+        - record: service:availability_error_ratio:rate6h
+          expr: |
+            service:http_errors:rate6h
+            /
+            clamp_min(service:http_requests:rate6h, 0.001)
+        # Burn rate 6 giờ cho SLO 99.9%.
+        - record: service:availability_burn_rate:6h
+          expr: |
+            service:availability_error_ratio:rate6h / 0.001
+
+        - alert: AvailabilityFastBurn
+          expr: |
+            service:availability_burn_rate:1h{namespace="platform",service="api-service"} > 14
+          for: 5m
+          labels:
+            severity: critical
+            namespace: platform
+            service: api-service
+          annotations:
+            runbook_url: https://sre.google/workbook/alerting-on-slos/
+            summary: "{{ $labels.service }} đang đốt error budget quá nhanh"
+            description: "{{ $labels.service }} trong namespace {{ $labels.namespace }} có burn rate {{ $value }}x trong cửa sổ 1h, vượt ngưỡng 14x của SLO 99.9%."
+
+        - alert: AvailabilitySlowBurn
+          expr: |
+            service:availability_burn_rate:6h{namespace="platform",service="api-service"} > 6
+          for: 30m
+          labels:
+            severity: warning
+            namespace: platform
+            service: api-service
+          annotations:
+            runbook_url: https://sre.google/workbook/alerting-on-slos/
+            summary: "{{ $labels.service }} đang tiêu error budget kéo dài"
+            description: "{{ $labels.service }} trong namespace {{ $labels.namespace }} có burn rate {{ $value }}x trong cửa sổ 6h, vượt ngưỡng 6x của SLO 99.9%."

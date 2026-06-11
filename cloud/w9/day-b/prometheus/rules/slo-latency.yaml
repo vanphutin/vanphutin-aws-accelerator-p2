@@ -1,0 +1,114 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: api-service-slo-latency
+  namespace: platform
+  labels:
+    prometheus: platform
+    role: alert-rules
+spec:
+  groups:
+    - name: api-service.latency.slo
+      interval: 30s
+      rules:
+        # p50 giúp xem latency thông thường của phần lớn request.
+        - record: service:http_request_duration_seconds:p50
+          expr: |
+            histogram_quantile(
+              0.50,
+              sum by (namespace, service, le) (
+                rate(http_request_duration_seconds_bucket{namespace="platform",service="api-service"}[5m])
+              )
+            )
+        # p95 giúp phát hiện nhóm request chậm nhưng chưa phải tail cực đoan.
+        - record: service:http_request_duration_seconds:p95
+          expr: |
+            histogram_quantile(
+              0.95,
+              sum by (namespace, service, le) (
+                rate(http_request_duration_seconds_bucket{namespace="platform",service="api-service"}[5m])
+              )
+            )
+        # p99 là SLI latency chính trong lab, mục tiêu nhỏ hơn 200ms.
+        - record: service:http_request_duration_seconds:p99
+          expr: |
+            histogram_quantile(
+              0.99,
+              sum by (namespace, service, le) (
+                rate(http_request_duration_seconds_bucket{namespace="platform",service="api-service"}[5m])
+              )
+            )
+
+        # Tỷ lệ request chậm hơn 200ms trong cửa sổ 1 giờ.
+        - record: service:latency_bad_ratio:rate1h
+          expr: |
+            (
+              sum by (namespace, service) (
+                rate(http_request_duration_seconds_bucket{namespace="platform",service="api-service",le="+Inf"}[1h])
+              )
+              -
+              sum by (namespace, service) (
+                rate(http_request_duration_seconds_bucket{namespace="platform",service="api-service",le="0.2"}[1h])
+              )
+            )
+            /
+            clamp_min(
+              sum by (namespace, service) (
+                rate(http_request_duration_seconds_bucket{namespace="platform",service="api-service",le="+Inf"}[1h])
+              ),
+              0.001
+            )
+        # Burn rate latency 1 giờ cho SLO 99.9%.
+        - record: service:latency_burn_rate:1h
+          expr: |
+            service:latency_bad_ratio:rate1h / 0.001
+
+        # Tỷ lệ request chậm hơn 200ms trong cửa sổ 6 giờ.
+        - record: service:latency_bad_ratio:rate6h
+          expr: |
+            (
+              sum by (namespace, service) (
+                rate(http_request_duration_seconds_bucket{namespace="platform",service="api-service",le="+Inf"}[6h])
+              )
+              -
+              sum by (namespace, service) (
+                rate(http_request_duration_seconds_bucket{namespace="platform",service="api-service",le="0.2"}[6h])
+              )
+            )
+            /
+            clamp_min(
+              sum by (namespace, service) (
+                rate(http_request_duration_seconds_bucket{namespace="platform",service="api-service",le="+Inf"}[6h])
+              ),
+              0.001
+            )
+        # Burn rate latency 6 giờ cho SLO 99.9%.
+        - record: service:latency_burn_rate:6h
+          expr: |
+            service:latency_bad_ratio:rate6h / 0.001
+
+        - alert: LatencyFastBurn
+          expr: |
+            service:latency_burn_rate:1h{namespace="platform",service="api-service"} > 14
+          for: 5m
+          labels:
+            severity: critical
+            namespace: platform
+            service: api-service
+          annotations:
+            runbook_url: https://sre.google/workbook/alerting-on-slos/
+            summary: "{{ $labels.service }} vi phạm latency SLO nhanh"
+            description: "{{ $labels.service }} có latency burn rate {{ $value }}x trong 1h; nhiều request vượt ngưỡng 200ms."
+
+        - alert: LatencySlowBurn
+          expr: |
+            service:latency_burn_rate:6h{namespace="platform",service="api-service"} > 6
+          for: 30m
+          labels:
+            severity: warning
+            namespace: platform
+            service: api-service
+          annotations:
+            runbook_url: https://sre.google/workbook/alerting-on-slos/
+            summary: "{{ $labels.service }} vi phạm latency SLO kéo dài"
+            description: "{{ $labels.service }} có latency burn rate {{ $value }}x trong 6h; tail latency đang tiêu error budget."

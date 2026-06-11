@@ -1,0 +1,141 @@
+# Cấu hình OTel Collector cho lab local-dev.
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  pprof:
+    endpoint: 0.0.0.0:1777
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+receivers:
+  # Nhận traces, metrics và logs từ SDK qua OTLP gRPC/HTTP.
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Scrape metrics từ app và chính Collector mỗi 30 giây.
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: api-service
+          scrape_interval: 30s
+          static_configs:
+            - targets:
+                - host.docker.internal:9464
+              labels:
+                namespace: platform
+                service: api-service
+        - job_name: otel-collector
+          scrape_interval: 30s
+          static_configs:
+            - targets:
+                - 0.0.0.0:8888
+              labels:
+                namespace: platform
+                service: otel-collector
+
+  # Đọc log JSON từ file khi chạy app local.
+  filelog:
+    include:
+      - /var/log/api-service/*.log
+    start_at: beginning
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.timestamp
+          layout: "%Y-%m-%dT%H:%M:%S.%LZ"
+
+processors:
+  # Bảo vệ Collector khỏi dùng quá nhiều RAM khi backend chậm.
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 512
+    spike_limit_mib: 128
+
+  # Gắn metadata Kubernetes vào telemetry khi Collector chạy trong cluster.
+  k8sattributes:
+    auth_type: serviceAccount
+    extract:
+      metadata:
+        - k8s.namespace.name
+        - k8s.pod.name
+        - k8s.node.name
+        - k8s.deployment.name
+
+  # Phát hiện thông tin môi trường chạy để thêm resource attributes.
+  resourcedetection:
+    detectors:
+      - env
+      - system
+    timeout: 5s
+    override: false
+
+  # Gom batch để giảm số request gửi tới backend.
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+exporters:
+  # Gửi metrics sang Prometheus-compatible backend như Mimir hoặc Thanos Receive.
+  prometheusremotewrite:
+    endpoint: http://prometheus:9090/api/v1/write
+    tls:
+      insecure: true
+
+  # Gửi traces sang Tempo bằng OTLP gRPC.
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Gửi logs sang Loki.
+  loki:
+    endpoint: http://loki:3100/loki/api/v1/push
+    default_labels_enabled:
+      exporter: false
+      job: true
+
+service:
+  extensions:
+    - health_check
+    - pprof
+    - zpages
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888
+  pipelines:
+    traces:
+      receivers:
+        - otlp
+      processors:
+        - memory_limiter
+        - resourcedetection
+        - k8sattributes
+        - batch
+      exporters:
+        - otlp/tempo
+    metrics:
+      receivers:
+        - otlp
+        - prometheus
+      processors:
+        - memory_limiter
+        - resourcedetection
+        - k8sattributes
+        - batch
+      exporters:
+        - prometheusremotewrite
+    logs:
+      receivers:
+        - otlp
+        - filelog
+      processors:
+        - memory_limiter
+        - resourcedetection
+        - k8sattributes
+        - batch
+      exporters:
+        - loki
