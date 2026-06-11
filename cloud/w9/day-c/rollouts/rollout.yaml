@@ -1,0 +1,117 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: api-service
+  namespace: platform
+  labels:
+    app.kubernetes.io/name: api-service
+    app.kubernetes.io/part-of: platform
+spec:
+  # Số pod mong muốn khi rollout khỏe hoàn toàn.
+  replicas: 4
+  # Giữ lịch sử revision để có thể rollback và điều tra.
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api-service
+  strategy:
+    canary:
+      # Service nhận traffic stable; Rollouts controller cập nhật selector của service này.
+      stableService: api-service-stable
+      # Service nhận traffic canary; Rollouts controller cập nhật selector của service này.
+      canaryService: api-service-canary
+      # Label gắn vào pod canary để Prometheus phân biệt metric version mới.
+      canaryMetadata:
+        labels:
+          version: canary
+      # Label gắn vào pod stable để Prometheus phân biệt metric version ổn định.
+      stableMetadata:
+        labels:
+          version: stable
+      # NGINX Ingress dùng annotation canary-weight để chia traffic HTTP.
+      trafficRouting:
+        nginx:
+          stableIngress: api-service-stable
+      # Cho phép tạo thêm tối đa 25% pod trong lúc rollout để tránh thiếu capacity.
+      maxSurge: 25%
+      # Không cho unavailable pod trong rollout vì đây là service API.
+      maxUnavailable: 0
+      steps:
+        # Smoke test chạy trước khi chuyển traffic sang canary.
+        - analysis:
+            templates:
+              - templateName: api-service-smoke
+        # Bước 1: chuyển 10% traffic sang canary.
+        - setWeight: 10
+        # Bước 2: quan sát burn rate và latency trong khoảng 5 phút.
+        - analysis:
+            templates:
+              - templateName: api-service-burn-rate
+            args:
+              - name: count
+                value: "5"
+        # Bước 3: tăng canary lên 30% nếu analysis đầu tiên pass.
+        - setWeight: 30
+        # Bước 4: quan sát lâu hơn trong khoảng 10 phút trước khi full promote.
+        - analysis:
+            templates:
+              - templateName: api-service-burn-rate
+            args:
+              - name: count
+                value: "10"
+        # Bước 5: chuyển 100% traffic sang version mới.
+        - setWeight: 100
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api-service
+        app.kubernetes.io/part-of: platform
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: api-service
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: api-service
+          image: ghcr.io/example/api-service:v1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SERVICE_NAME
+              value: api-service
+            - name: SERVICE_VERSION
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['version']
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

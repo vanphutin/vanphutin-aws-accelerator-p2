@@ -1,0 +1,60 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: api-service-burn-rate
+  namespace: platform
+spec:
+  args:
+    # Số lần đo metric; rollout truyền "5" cho 5 phút hoặc "10" cho 10 phút.
+    - name: count
+      value: "5"
+    # Địa chỉ Prometheus; có thể override nếu môi trường dùng service khác.
+    - name: prometheus-address
+      value: http://prometheus-operated.monitoring.svc.cluster.local:9090
+  metrics:
+    # Metric 1: availability burn rate lấy đúng recording rule từ day-b.
+    - name: availability-burn-rate
+      # Đợi 2 phút để Prometheus có ít nhất vài sample sau khi traffic shift.
+      initialDelay: 2m
+      # Đo mỗi 1 phút.
+      interval: 1m
+      # Số lần đo do rollout truyền vào.
+      count: "{{args.count}}"
+      # Service critical nên chỉ cần một lần failure là abort.
+      failureLimit: 0
+      # Không cho phép quá nhiều kết quả không kết luận.
+      inconclusiveLimit: 1
+      # Thành công khi burn rate nhỏ hơn 1x, nghĩa là tiêu budget không nhanh hơn mức cho phép.
+      successCondition: result[0] < 1
+      # Thất bại ngay khi burn rate đạt ngưỡng fast burn 14x.
+      failureCondition: result[0] >= 14
+      provider:
+        prometheus:
+          # Prometheus endpoint được truyền qua args để dễ dùng lại giữa môi trường.
+          address: "{{args.prometheus-address}}"
+          # Query dùng exact recording rule đã định nghĩa trong day-b.
+          query: |
+            service:availability_burn_rate:1h{namespace="platform",service="api-service"}
+
+    # Metric 2: p99 latency phải nhỏ hơn 200ms, fail nếu chạm 500ms.
+    - name: latency-p99
+      initialDelay: 2m
+      interval: 1m
+      count: "{{args.count}}"
+      # Latency có thể dao động nhẹ nên cho phép một lần fail trước khi abort.
+      failureLimit: 1
+      inconclusiveLimit: 1
+      successCondition: result[0] < 0.2
+      failureCondition: result[0] >= 0.5
+      provider:
+        prometheus:
+          address: "{{args.prometheus-address}}"
+          query: |
+            histogram_quantile(
+              0.99,
+              sum by (le) (
+                rate(http_request_duration_seconds_bucket{namespace="platform",service="api-service",version="canary"}[5m])
+              )
+            )
+  # Không khai báo dryRun dạng boolean vì AnalysisTemplate không có field boolean đó;
+  # mặc định AnalysisRun chạy thật và có quyền abort rollout khi failureCondition đúng.

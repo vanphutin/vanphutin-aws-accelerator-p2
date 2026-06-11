@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-service-stable
+  namespace: platform
+  labels:
+    app.kubernetes.io/name: api-service
+    traffic-role: stable
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: api-service
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api-service-stable
+  namespace: platform
+  annotations:
+    # NGINX dùng ingress này làm route chính cho stable traffic.
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: api.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-service-stable
+                port:
+                  number: 80

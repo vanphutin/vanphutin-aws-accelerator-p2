@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: api-service-smoke
+  namespace: platform
+spec:
+  metrics:
+    # Smoke test gọi health endpoint của canary service trước khi nhận traffic thật.
+    - name: canary-health
+      # Chạy 3 lần để tránh pass nhầm vì một response đơn lẻ.
+      count: 3
+      # Mỗi lần cách nhau 30 giây.
+      interval: 30s
+      # Không cho phép failure nào trước bước traffic shift.
+      failureLimit: 0
+      # Thành công khi JSON field status bằng "ok".
+      successCondition: result == "ok"
+      provider:
+        web:
+          # Endpoint nội bộ của canary service trong namespace platform.
+          url: http://api-service-canary.platform.svc.cluster.local/health
+          # Chỉ lấy trường status từ JSON response để so sánh.
+          jsonPath: "{$.status}"
+          # Timeout ngắn để fail nhanh nếu service không phản hồi.
+          timeoutSeconds: 5
