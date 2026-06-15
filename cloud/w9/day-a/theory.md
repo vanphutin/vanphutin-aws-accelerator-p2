@@ -2,7 +2,7 @@
 
 ## 0. Cách dùng tài liệu này
 
-Hãy đọc `theory.md` trước để nắm mô hình tư duy, sau đó luyện từng lệnh trong `commands.md`, rồi làm `lab.md` để chạy toàn bộ luồng trên cluster `kind` tên `local-dev`. Mục tiêu của ngày này là hiểu vì sao Git trở thành nguồn sự thật, CI chỉ kiểm tra và chuẩn bị thay đổi, còn controller như ArgoCD hoặc Flux mới là thành phần kéo trạng thái mong muốn vào Kubernetes.
+Hãy đọc `theory.md` trước để nắm mô hình tư duy, sau đó luyện từng lệnh trong `commands.md`, rồi làm `lab.md` để chạy toàn bộ luồng trên cluster `minikube` tên `local-dev`. Mục tiêu của ngày này là hiểu vì sao Git trở thành nguồn sự thật, CI chỉ kiểm tra và chuẩn bị thay đổi, còn controller như ArgoCD hoặc Flux mới là thành phần kéo trạng thái mong muốn vào Kubernetes.
 
 ## 1. GitOps là gì, và vì sao bạn nên quan tâm?
 

@@ -6,7 +6,7 @@ Lab này giúp bạn tự tay dựng cluster `local-dev`, cài ArgoCD, deploy m�
 
 Bạn cần các công cụ sau:
 
-- `kind` v0.22+ để tạo Kubernetes cluster local.
+- `minikube` v1.32+ để tạo Kubernetes cluster local.
 - `kubectl` tương thích với Kubernetes v1.29+.
 - `helm` 3.x để cài ArgoCD.
 - `argocd` CLI v2.10+.
@@ -16,7 +16,7 @@ Bạn cần các công cụ sau:
 Kiểm tra nhanh:
 
 ```bash
-kind version
+minikube version
 kubectl version --client
 helm version
 argocd version --client
@@ -27,7 +27,7 @@ git remote -v
 --- kết quả mong đợi ---
 
 ```text
-kind v0.22.0 go1.21.7 linux/amd64
+minikube version: v1.32.0
 Client Version: v1.29.3
 version.BuildInfo{Version:"v3.15.4", GitCommit:"..."}
 argocd: v2.10.7+...
@@ -39,58 +39,42 @@ origin  https://github.com/vanphutin/vanphutin-aws-accelerator-p2.git (push)
 
 ✓ Điểm kiểm tra: tất cả lệnh version chạy được và `gh auth status` báo đã đăng nhập.
 
-## Bước 1: Tạo cluster `kind` local
+## Bước 1: Tạo cluster `minikube` local
 
-Mục tiêu: tạo một Kubernetes cluster local tên `local-dev` có port map sẵn cho ingress ở các ngày sau.
+Mục tiêu: tạo một Kubernetes cluster local tên `local-dev` có 3 nodes và cấu hình ingress cho các ngày sau.
 
 ```bash
-cat > kind-local-dev.yaml <<'YAML'
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-name: local-dev
-nodes:
-  - role: control-plane
-    kubeadmConfigPatches:
-      - |
-        kind: InitConfiguration
-        nodeRegistration:
-          kubeletExtraArgs:
-            node-labels: "ingress-ready=true"
-    extraPortMappings:
-      - containerPort: 80
-        hostPort: 80
-        protocol: TCP
-      - containerPort: 443
-        hostPort: 443
-        protocol: TCP
-  - role: worker
-  - role: worker
-YAML
+# Tạo cluster với 3 node
+minikube start --nodes 3 -p local-dev
 
-kind create cluster --config kind-local-dev.yaml
-kubectl cluster-info --context kind-local-dev
+# Bật addon ingress
+minikube addons enable ingress -p local-dev
+
+# Mở một terminal riêng và giữ tunnel chạy để map service/ingress về localhost
+minikube tunnel -p local-dev
+
+# Kiểm tra cluster
+kubectl cluster-info --context local-dev
 kubectl get nodes -o wide
 ```
 
 --- kết quả mong đợi ---
 
 ```text
-Creating cluster "local-dev" ...
- ✓ Ensuring node image (kindest/node:v1.29.2)
- ✓ Preparing nodes
- ✓ Writing configuration
- ✓ Starting control-plane
- ✓ Installing CNI
- ✓ Installing StorageClass
- ✓ Joining worker nodes
-Set kubectl context to "kind-local-dev"
+😄  minikube v1.32.0 on ...
+✨  Automatically selected the docker driver
+👍  Starting control plane node local-dev in cluster local-dev
+...
+✨  Enabling addon 'ingress'
+...
+Set kubectl context to "local-dev"
 
 Kubernetes control plane is running at https://127.0.0.1:xxxxx
 
-NAME                      STATUS   ROLES           AGE   VERSION
-local-dev-control-plane   Ready    control-plane   60s   v1.29.2
-local-dev-worker          Ready    <none>          45s   v1.29.2
-local-dev-worker2         Ready    <none>          45s   v1.29.2
+NAME           STATUS   ROLES           AGE   VERSION
+local-dev      Ready    control-plane   60s   v1.29.2
+local-dev-m02  Ready    <none>          45s   v1.29.2
+local-dev-m03  Ready    <none>          45s   v1.29.2
 ```
 
 ✓ Điểm kiểm tra: `kubectl get nodes` có 3 node trạng thái `Ready`.

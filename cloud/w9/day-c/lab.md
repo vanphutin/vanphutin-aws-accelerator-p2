@@ -1,15 +1,15 @@
 # Ngày C - Lab: Canary với Argo Rollouts
 
-Lab này dùng cluster `kind` từ Ngày A và Prometheus từ Ngày B để chạy canary cho `api-service`. Bạn sẽ cài Argo Rollouts, cài NGINX Ingress, deploy stable v1, trigger canary v2, quan sát AnalysisRun, ép lỗi, xem automatic abort, rồi retry với v3 khỏe.
+Lab này dùng cluster `minikube` từ Ngày A và Prometheus từ Ngày B để chạy canary cho `api-service`. Bạn sẽ cài Argo Rollouts, cài NGINX Ingress, deploy stable v1, trigger canary v2, quan sát AnalysisRun, ép lỗi, xem automatic abort, rồi retry với v3 khỏe.
 
 ## Điều kiện chuẩn bị
 
 Bạn cần:
 
-- Cluster `kind` tên `local-dev` từ Ngày A vẫn chạy.
+- Cluster `minikube` tên `local-dev` từ Ngày A vẫn chạy.
 - Prometheus từ Ngày B vẫn chạy tại `http://localhost:9090`.
 - `helm` 3.x.
-- `kubectl` đang trỏ tới context `kind-local-dev`.
+- `kubectl` đang trỏ tới context `local-dev`.
 - `kubectl argo rollouts` plugin.
 - `k6` để chạy load test.
 
@@ -25,11 +25,11 @@ k6 version
 --- kết quả mong đợi ---
 
 ```text
-kind-local-dev
-NAME                      STATUS   ROLES           AGE   VERSION
-local-dev-control-plane   Ready    control-plane   1d    v1.29.2
-local-dev-worker          Ready    <none>          1d    v1.29.2
-local-dev-worker2         Ready    <none>          1d    v1.29.2
+local-dev
+NAME           STATUS   ROLES           AGE   VERSION
+local-dev      Ready    control-plane   1d    v1.29.2
+local-dev-m02  Ready    <none>          1d    v1.29.2
+local-dev-m03  Ready    <none>          1d    v1.29.2
 Prometheus Server is Ready.
 k6 v0.49.0
 ```
