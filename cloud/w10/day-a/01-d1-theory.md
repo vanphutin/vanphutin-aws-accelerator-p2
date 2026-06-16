@@ -1,667 +1,183 @@
-# D1 - Kubernetes Security Core: Theory, Evidence, Production Mindset
+# Tài Liệu Lý Thuyết: Kubernetes RBAC & Policy Enforcement (OPA, Gatekeeper, Kyverno, ValidatingAdmissionPolicy)
 
-## Mục tiêu
+---
 
-D1 giúp bạn hiểu và thực hành lớp bảo vệ đầu tiên của Kubernetes platform:
+## 1. Kubernetes Authorization & RBAC (Role-Based Access Control)
 
-- RBAC: ai được làm gì, với resource nào, trong phạm vi nào.
-- ServiceAccount: identity của workload chạy bên trong cluster.
-- `kubectl auth can-i`: cách verify quyền thay vì đoán.
-- Admission policy: chặn manifest xấu trước khi object được lưu vào cluster.
-- OPA/Rego và Gatekeeper: viết policy linh hoạt cho Kubernetes.
-- ValidatingAdmissionPolicy: policy native của Kubernetes dùng CEL.
-- Kyverno: alternative Kubernetes-native cho policy management.
+### 1.1. Tổng quan về Cơ chế Kiểm soát Truy cập (AuthN, AuthZ, Admission Control)
+Khi một API request được gửi đến Kubernetes API Server, nó phải trải qua 3 giai đoạn chính trước khi được ghi vào `etcd`:
 
-Production mindset của D1: không chỉ "deploy được", mà phải deploy trong guardrail rõ ràng.
-
-```text
-kubectl apply
-   |
-   v
-Authentication: bạn là ai?
-   |
-   v
-Authorization/RBAC: bạn có được làm action này không?
-   |
-   v
-Admission: manifest có đúng chuẩn security/platform không?
-   |
-   v
-Persist vào etcd
+```mermaid
+graph LR
+    Request[API Request] --> AuthN[Authentication - Ai?]
+    AuthN --> AuthZ[Authorization - Được làm gì?]
+    AuthZ --> MutatingWebhook[Mutating Admission - Chỉnh sửa payload]
+    MutatingWebhook --> Schema[Schema Validation - Cú pháp]
+    Schema --> ValidatingWebhook[Validating Admission - Kiểm tra chính sách]
+    ValidatingWebhook --> Etcd[(etcd - Lưu trữ)]
 ```
 
-Nguồn chính:
+*   **Authentication (AuthN):** Xác định danh tính thực thể (User, Group, ServiceAccount).
+*   **Authorization (AuthZ):** Xác định thực thể đó có quyền thực hiện hành động (Verb) trên tài nguyên (Resource) hay không thông qua **RBAC**, **ABAC**, hoặc **Webhook**.
+*   **Admission Control:** Giai đoạn can thiệp trực tiếp vào nội dung Object. Gồm `Mutating` (thay đổi cấu hình mặc định) và `Validating` (phê duyệt hoặc bác bỏ yêu cầu dựa trên quy tắc bảo mật phức tạp mà RBAC không thể làm được).
 
-- Kubernetes RBAC: https://kubernetes.io/docs/reference/access-authn-authz/rbac/
-- kubectl auth can-i: https://kubernetes.io/docs/reference/kubectl/generated/kubectl_auth/kubectl_auth_can-i/
-- Kubernetes Admission Control: https://kubernetes.io/docs/reference/access-authn-authz/admission-controllers/
-- ValidatingAdmissionPolicy: https://kubernetes.io/docs/reference/access-authn-authz/validating-admission-policy/
-- OPA docs: https://www.openpolicyagent.org/docs
-- Gatekeeper docs: https://open-policy-agent.github.io/gatekeeper/website/docs/
-- Kyverno docs: https://kyverno.io/docs/
+---
 
-## 1. Production Scenario
+### 1.2. Các Thành phần của RBAC
+RBAC phân quyền dựa trên sự kết hợp của: **Who (Subject)** + **What (API Group, Resource, Verb)**.
 
-Công ty có namespace `dev` cho team developer deploy ứng dụng. Nếu cấp `cluster-admin` cho developer, một lệnh sai có thể:
+*   **API Groups & Resources:** Tài nguyên K8s được nhóm theo API Groups (ví dụ: `apps` cho Deployment/StatefulSet, `""` (core) cho Pod/Service/ConfigMap).
+*   **Verbs:** Các hành động (hành vi) như `get`, `list`, `watch`, `create`, `update`, `patch`, `delete`, `deletecollection`.
+*   **Role & ClusterRole:** Định nghĩa **danh sách các quyền**:
+    *   `Role`: Giới hạn quyền trong phạm vi một **Namespace** cụ thể.
+    *   `ClusterRole`: Phân quyền trên toàn bộ **Cluster** (hoặc các tài nguyên non-namespaced như Node, PersistentVolume, CustomResourceDefinition).
+*   **RoleBinding & ClusterRoleBinding:** Gán quyền (Role/ClusterRole) cho các **Subjects** (User, Group, ServiceAccount):
+    *   `RoleBinding`: Áp dụng quyền trong một Namespace.
+    *   `ClusterRoleBinding`: Áp dụng quyền trên toàn bộ Cluster.
+    *   *Lưu ý nâng cao:* Bạn có thể dùng `RoleBinding` để liên kết một `ClusterRole` với một Subject. Khi đó, Subject chỉ có các quyền của `ClusterRole` trong Namespace chứa `RoleBinding` đó.
 
-- xóa Secret của namespace khác,
-- sửa ConfigMap production,
-- tạo Service public không kiểm soát,
-- deploy Pod privileged,
-- dùng image `:latest` không trace được version,
-- deploy container không có resource limits làm node bị áp lực CPU/RAM.
+---
 
-Mục tiêu production:
+### 1.3. Rủi ro Bảo mật RBAC Thường gặp & Best Practices (Security Mindset)
+Trong môi trường production, RBAC bị cấu hình sai là một trong những nguyên nhân hàng đầu dẫn đến **Privilege Escalation** (Leo thang đặc quyền).
 
-```text
-Developer được deploy app trong namespace dev
-nhưng không được vượt quá ranh giới namespace,
-không được tạo resource ngoài phạm vi,
-và manifest phải đạt chuẩn security/platform.
+#### Rủi ro 1: Sử dụng Ký tự Đại diện (Wildcard `*`) quá đà
+*   **Nguy cơ:** Cấp quyền `*` cho `resources` hoặc `verbs` có thể vô tình cho phép kẻ tấn công thực thi các quyền nguy hiểm.
+*   **Dẫn chứng:** Cấp quyền `*` trên `rules` tương đương với việc cấp quyền quản trị cao nhất.
+
+#### Rủi ro 2: Quyền nguy hiểm dẫn đến Privilege Escalation
+*   **Quyền tạo Pod (`create` pod) kết hợp với HostPath hoặc Privileged Container:**
+    *   *Kịch bản:* Kẻ tấn công tạo một Pod mount root directory `/` của Worker Node vào Pod (`hostPath`). Từ Pod này, kẻ tấn công chroot vào Node và chiếm quyền kiểm soát Node (`root`).
+*   **Quyền `bind` hoặc `escalate` trên Roles/ClusterRoles:**
+    *   Cho phép một User gán quyền cho người khác cao hơn quyền hiện tại của chính họ.
+*   **Quyền `impersonate` (Mạo danh):**
+    *   Cho phép một tài khoản thực thi câu lệnh dưới danh nghĩa của một User hoặc Group khác (ví dụ: `system:masters`).
+
+#### Production RBAC Hardening Guidelines:
+1.  **Nguyên tắc Đặc quyền Tối thiểu (Least Privilege):** Không bao giờ dùng `cluster-admin` trừ khi thực sự cần thiết. Phân rã quyền chi tiết (chỉ cấp `get`, `list` thay vì `*`).
+2.  **Tránh sử dụng nhóm mặc định `system:masters`:** Nhóm này bỏ qua mọi cơ chế kiểm tra RBAC của API Server.
+3.  **Tách biệt ServiceAccount cho từng Workload:** Không sử dụng `default` ServiceAccount. Vô hiệu hóa tính năng tự động mount token (`automountServiceAccountToken: false`) nếu ứng dụng không cần tương tác với Kubernetes API.
+4.  **Giới hạn quyền cập nhật Secrets:** Quyền `get` / `list` Secrets phải được bảo vệ cực kỳ nghiêm ngặt vì chúng chứa thông tin đăng nhập, key bảo mật.
+
+---
+
+## 2. Tại sao RBAC là chưa đủ? Sự ra đời của Policy Engines
+RBAC chỉ trả lời câu hỏi: *"User X có quyền TẠO (create) Pod trong Namespace Y không?"*
+RBAC **không thể** trả lời các câu hỏi sau:
+*   *"Pod được tạo có mount thư mục nhạy cảm từ Node (`hostPath`) không?"*
+*   *"Image của Container có được lấy từ private registry hợp lệ (ví dụ: `gcr.io/company/`) không hay từ Docker Hub công cộng?"*
+*   *"Container có chạy với quyền root không (`runAsNonRoot: true`)?"*
+*   *"Deployment có định nghĩa CPU/Memory Limit/Request rõ ràng không?"*
+
+Để thực thi các quy tắc nghiệp vụ và bảo mật sâu ở mức cấu hình (Resource Spec), chúng ta cần các **Policy Engines** hoạt động tại giai đoạn **Admission Control**.
+
+---
+
+## 3. OPA Gatekeeper (Open Policy Agent)
+
+### 3.1. OPA & Ngôn ngữ Rego
+*   **Open Policy Agent (OPA):** Là một policy engine đa dụng mã nguồn mở, hoạt động độc lập với Kubernetes.
+*   **Rego:** Ngôn ngữ khai báo (declarative query language) được OPA sử dụng để định nghĩa chính sách. Rego tập trung vào cấu trúc dữ liệu JSON/YAML phức tạp và đưa ra quyết định Allow/Deny.
+
+### 3.2. Kiến trúc Gatekeeper trong Kubernetes
+Gatekeeper là một controller tích hợp OPA vào Kubernetes Admission Webhook.
+
+```mermaid
+graph TD
+    APIServer[Kubernetes API Server] -- ValidatingWebhook --> Gatekeeper[Gatekeeper Controller]
+    Gatekeeper -- Query Data --> OPAEngine[OPA Engine]
+    OPAEngine -- Rego Policies --> Gatekeeper
+    Gatekeeper -- Decision Allow/Deny --> APIServer
+    AuditController[Gatekeeper Audit Controller] -- Quét Cluster định kỳ --> Violations[Danh sách vi phạm]
 ```
 
-D1 không phải học thuộc YAML. D1 là học cách thiết kế guardrail.
-
-## 2. RBAC: Authentication Khác Authorization
-
-Kubernetes access control có nhiều bước. RBAC nằm ở bước authorization.
-
-- Authentication: xác định request đến từ identity nào.
-- Authorization: identity đó có được phép thực hiện action không.
-- Admission: request đã được authorize rồi, nhưng object có hợp lệ không.
-
-Ví dụ:
-
-```text
-dev-user authenticated thành công
-dev-user được create deployments trong namespace dev
-nhưng Deployment dùng image :latest
-=> RBAC allow, Admission policy có thể reject
-```
-
-## 3. RBAC Object Model
-
-### Role
-
-`Role` định nghĩa quyền trong một namespace.
-
-Ví dụ logic:
-
-```text
-Trong namespace dev:
-- được get/list/watch/create/update/patch/delete pods
-- được get/list/watch/create/update/patch/delete deployments
-```
-
-`Role` không gán quyền cho ai. Nó chỉ mô tả permission.
-
-### RoleBinding
-
-`RoleBinding` gán `Role` cho subject.
-
-Subject có thể là:
-
-- `User`
-- `Group`
-- `ServiceAccount`
-
-Ví dụ:
-
-```text
-Role dev-deployer
-gán cho User dev-user
-trong namespace dev
-```
-
-### ClusterRole
-
-`ClusterRole` định nghĩa quyền cấp cluster, hoặc định nghĩa bộ quyền có thể được reuse qua nhiều namespace.
-
-Dùng `ClusterRole` khi:
-
-- resource là cluster-scoped, ví dụ `nodes`, `namespaces`, `persistentvolumes`,
-- cần role dùng chung cho nhiều namespace,
-- cần aggregate permissions cho platform/admin.
-
-### ClusterRoleBinding
-
-`ClusterRoleBinding` gán `ClusterRole` trên toàn cluster. Đây là object cần cẩn trọng. Sai một dòng có thể mở quyền qua tất cả namespace.
-
-Rule thực tế:
-
-```text
-Nếu chỉ cần quyền trong namespace, dùng Role + RoleBinding.
-Nếu cần quyền toàn cluster, mới cần ClusterRoleBinding.
-```
-
-## 4. RBAC Rule: apiGroups, Resources, Verbs
-
-Một rule RBAC cần 3 thành phần quan trọng:
-
-```yaml
-apiGroups: [...]
-resources: [...]
-verbs: [...]
-```
-
-### apiGroups
-
-`apiGroups` không phải tên cluster, không phải `k8s`, không phải `minikube`.
-
-Nó là group của Kubernetes API.
-
-Ví dụ:
-
-```text
-pods        -> apiGroups: [""]
-services    -> apiGroups: [""]
-secrets     -> apiGroups: [""]
-deployments -> apiGroups: ["apps"]
-jobs        -> apiGroups: ["batch"]
-```
-
-`apiGroups: [""]` nghĩa là core API group, không phải "không có quyền".
-
-`apiGroups: ["*"]` là wildcard. Dùng wildcard trong production phải có lý do rõ ràng, vì nó làm permission mở hơn cần thiết.
-
-### resources
-
-`resources` là tên loại Kubernetes object:
-
-```text
-pods
-deployments
-services
-secrets
-configmaps
-namespaces
-```
-
-Nên viết plural resource name để rõ ràng:
-
-```text
-deployments
-services
-pods
-```
-
-### verbs
-
-Kubernetes không có verb tên `CRUD`.
-
-Thường gặp:
-
-```text
-get
-list
-watch
-create
-update
-patch
-delete
-deletecollection
-```
-
-Map với CRUD:
-
-```text
-Create -> create
-Read   -> get/list/watch
-Update -> update/patch
-Delete -> delete
-```
-
-## 5. User vs ServiceAccount
-
-Đây là lỗi rất phổ biến.
-
-```text
-User           = người hoặc CI/CD identity dùng kubectl/kubeconfig
-ServiceAccount = identity của Pod chạy trong cluster
-```
-
-Trong lab:
-
-```text
-dev-user  -> User được RoleBinding để deploy app
-webapp-sa -> ServiceAccount gán vào Pod/Deployment
-```
-
-Nếu bind nhầm:
-
-- Bind Role cho `ServiceAccount dev-user`: người dùng `dev-user` vẫn không có quyền.
-- Cấp quyền quá rộng cho ServiceAccount: nếu app bị compromise, attacker có token để thao tác cluster.
-
-Production rule:
-
-```text
-Người deploy và workload runtime phải là hai identity riêng.
-Không cấp quyền runtime nếu workload không cần gọi Kubernetes API.
-```
-
-## 6. kubectl auth can-i
-
-`kubectl auth can-i` dùng để kiểm tra một action có được authorize hay không.
-
-Pattern:
-
-```bash
-kubectl auth can-i <verb> <resource> --namespace <namespace> --as <user>
-```
-
-Ví dụ:
-
-```bash
-kubectl auth can-i create deployments --namespace dev --as dev-user
-kubectl auth can-i create secrets --namespace dev --as dev-user
-kubectl auth can-i create deployments --namespace prod --as dev-user
-```
-
-Production mindset:
-
-```text
-Test allowed path.
-Test denied path.
-Test wrong namespace.
-Test subresource nếu cần, ví dụ pods/log.
-```
-
-## 7. Admission Control: Vì Sao RBAC Không Đủ
-
-RBAC chỉ trả lời:
-
-```text
-Ai có được tạo Deployment không?
-```
-
-Admission policy trả lời:
-
-```text
-Deployment được tạo có đạt chuẩn không?
-```
-
-Theo Kubernetes docs, admission controller intercept request trước khi resource được persist, sau khi request đã authenticated và authorized.
-
-Ví dụ RBAC allow nhưng admission reject:
-
-```text
-dev-user được create deployments
-nhưng deployment:
-- image: nginx:latest
-- thiếu resources.limits
-- privileged: true
-=> admission policy reject
-```
-
-Admission control có thể:
-
-- mutating: sửa object trước khi lưu,
-- validating: chỉ kiểm tra và allow/reject.
-
-Gatekeeper và ValidatingAdmissionPolicy trong D1 thuộc nhóm validating policy.
-
-## 8. OPA Và Rego
-
-OPA tách policy decision khỏi application/platform enforcement.
-
-Mental model:
-
-```text
-Input JSON/YAML
-   |
-   v
-Rego policy
-   |
-   v
-Decision: allow/deny/violations/structured output
-```
-
-Trong Kubernetes admission, input thường là AdmissionReview object. Gatekeeper đưa object đang review vào:
-
-```text
-input.review.object
-```
-
-Ví dụ field path cần tư duy:
-
-```text
-input.review.object.spec.containers[_].image
-input.review.object.spec.containers[_].resources.limits.cpu
-input.review.object.spec.containers[_].resources.limits.memory
-```
-
-Rego mạnh khi policy:
-
-- phức tạp,
-- cần loop qua danh sách container,
-- cần helper function,
-- cần referential data,
-- cần policy library.
-
-Điểm cẩn thận:
-
-- Rego có learning curve.
-- Policy sai có thể tạo cảm giác an toàn giả.
-- Cần test policy như test code.
-
-## 9. Gatekeeper: ConstraintTemplate vs Constraint
-
-Gatekeeper dùng OPA Constraint Framework để enforce policy trên Kubernetes.
-
-Hai object cần nhớ:
-
-```text
-ConstraintTemplate = định nghĩa policy logic và schema parameters
-Constraint         = áp dụng template vào resource nào, với parameter nào, enforcementAction nào
-```
-
-Theo docs Gatekeeper, ConstraintTemplate gồm Rego code và schema của Constraint đi kèm.
-
-### ConstraintTemplate
-
-Dùng để định nghĩa:
-
-- tên kind mới của constraint, ví dụ `K8sRequiredLimits`,
-- Rego logic phát hiện violation,
-- schema cho `parameters`.
-
-### Constraint
-
-Dùng để định nghĩa:
-
-- match kind nào, namespace nào,
-- parameter cụ thể,
-- enforcement action.
-
-Gatekeeper có các enforcement action quan trọng:
-
-```text
-deny   -> reject admission request
-dryrun -> ghi nhận violation, không reject
-warn   -> cảnh báo client
-```
-
-Production rollout nên:
-
-```text
-dryrun/warn trước
-fix workload vi phạm
-deny sau
-```
-
-## 10. Policy D1 Cần Biết
-
-### Require Resource Limits
-
-Bad Pod:
-
-```yaml
-apiVersion: v1
-kind: Pod
-metadata:
-  name: bad-pod
-spec:
-  containers:
-  - name: app
-    image: nginx:1.27
-```
-
-Vi phạm vì container không có:
-
-```text
-spec.containers[i].resources.limits.cpu
-spec.containers[i].resources.limits.memory
-```
-
-Nếu Pod có 2 containers và chỉ 1 container thiếu limits, policy nên reject cả Pod.
-
-Lý do: mọi container đều có thể gây memory leak hoặc CPU pressure.
-
-### Block `:latest`
-
-Bad:
-
-```text
-nginx:latest
-```
-
-Tốt hơn:
-
-```text
-nginx:1.27
-```
-
-Production-grade:
-
-```text
-nginx@sha256:<digest>
-```
-
-Cẩn thận bypass:
-
-```text
-nginx
-```
-
-Nếu policy chỉ check `endsWith(":latest")`, image `nginx` có thể lọt. Production policy tốt hơn nên chặn cả image không có tag hoặc bắt digest.
-
-### Approved Registry
-
-Chỉ cho image từ registry đã approve, ví dụ:
-
-```text
-123456789012.dkr.ecr.ap-southeast-1.amazonaws.com/
-```
-
-Logic nên dùng:
-
-```text
-image startsWith approved_registry_prefix
-```
-
-Không nên dùng:
-
-```text
-image contains "amazonaws"
-```
-
-Vì contains dễ bị bypass bằng tên image/registry giả.
-
-## 11. ValidatingAdmissionPolicy
-
-ValidatingAdmissionPolicy là admission policy native trong Kubernetes, stable từ Kubernetes v1.30.
-
-Nó dùng CEL, không cần external webhook callout như nhiều policy engine bên ngoài.
-
-Thành phần:
-
-```text
-ValidatingAdmissionPolicy        = logic abstract của policy
-ValidatingAdmissionPolicyBinding = gán policy vào scope/resource và action
-Parameter resource               = tùy chọn, dùng khi policy cần config động
-```
-
-Ít nhất cần:
-
-```text
-ValidatingAdmissionPolicy
-ValidatingAdmissionPolicyBinding
-```
-
-`validationActions` quan trọng:
-
-```text
-Deny  -> reject request
-Warn  -> trả warning về client
-Audit -> ghi violation vào audit event
-```
-
-Production rollout:
-
-```text
-Warn + Audit -> quan sát và sửa app
-Deny         -> enforce sau khi đã an toàn
-```
-
-Use case D1:
-
-```text
-Chỉ allow Pod/Deployment nếu mọi container image startsWith ECR prefix đã approve.
-```
-
-## 12. Gatekeeper vs ValidatingAdmissionPolicy vs Kyverno
-
-### Gatekeeper
-
-Dùng khi:
-
-- đã quen OPA/Rego,
-- policy phức tạp,
-- cần library/referential data,
-- đã có ecosystem Gatekeeper sẵn.
-
-Trade-off:
-
-- cần cài controller/webhook,
-- Rego có learning curve,
-- cần quản trị availability/performance của webhook.
-
-### ValidatingAdmissionPolicy
-
-Dùng khi:
-
-- policy validation tương đối gọn,
-- muốn native Kubernetes,
-- muốn CEL,
-- không muốn external HTTP webhook cho logic đơn giản.
-
-Trade-off:
-
-- validation-focused,
-- không thay thế mọi khả năng của policy engine đầy đủ,
-- cần nắm CEL và version Kubernetes.
-
-### Kyverno
-
-Kyverno là cloud native policy engine, ban đầu được built cho Kubernetes. Kyverno hỗ trợ viết policy bằng YAML và CEL, quản lý policy như Kubernetes resources, enforce qua admission controller/CLI/runtime, và có các khả năng validate, mutate, generate, cleanup, image verification, policy exception.
-
-Dùng khi:
-
-- team thích policy YAML-native,
-- cần mutate/generate/image verification với syntax gần Kubernetes,
-- muốn onboarding nhanh hơn Rego.
-
-Trade-off:
-
-- vẫn là một controller/policy engine phải vận hành (operate),
-- syntax và behavior riêng của Kyverno cần học và test.
-
-## 13. Common Mistakes Của Người Mới
-
-1. Dùng `cluster-admin` cho dev vì "cho nhanh".
-
-Production risk: blast radius toàn cluster.
-
-2. Nhầm `User` với `ServiceAccount`.
-
-Production risk: user không có quyền thật, hoặc Pod có quyền quá rộng.
-
-3. Dùng wildcard:
-
-```yaml
-apiGroups: ["*"]
-resources: ["*"]
-verbs: ["*"]
-```
-
-Production risk: khó audit, khó chứng minh least privilege.
-
-4. Chỉ test `yes`, không test `no`.
-
-Production risk: không phát hiện quyền vượt scope.
-
-5. Tưởng RBAC chặn được manifest xấu.
-
-RBAC không biết image có `:latest` hay container có limits không.
-
-6. Enforce policy ngay trên prod.
-
-Production risk: chặn rollout hợp lệ, gây incident.
-
-7. Policy chỉ check happy-path.
-
-Ví dụ chỉ chặn `:latest`, nhưng bỏ lọt `nginx` không tag.
-
-8. Không test multi-container.
-
-Pod có sidecar thiếu limits vẫn nguy hiểm.
-
-## 14. D1 Production Checklist
-
-RBAC:
-
-- Namespace riêng cho team/env.
-- Role theo least privilege.
-- RoleBinding đúng subject.
-- Không dùng wildcard nếu không cần.
-- Verify bằng `kubectl auth can-i`.
-- Test namespace đúng và namespace sai.
-
-ServiceAccount:
-
-- Workload có ServiceAccount riêng.
-- Không dùng default ServiceAccount cho app quan trọng.
-- Không cấp quyền Kubernetes API nếu app không cần.
-
-Admission:
-
-- Require resource limits.
-- Chặn `:latest` và image không pin.
-- Approved registry.
-- Audit/Warn trước, Deny sau.
-- Test bad manifest và good manifest.
-
-Operations:
-
-- Có rollback plan cho policy.
-- Có exception process có owner và expiry.
-- Có audit/report violation.
-- Policy nằm trong Git, review như code.
-
-## 15. Prompt Mentor Nâng Cấp Cho D1
-
-Dùng prompt này khi muốn tiếp tục học D1 theo mentor mode:
-
-```text
-Bạn là Senior DevOps Engineer với security mindset và production-ready thinking.
-Hãy dạy tôi D1 Kubernetes Security Core theo phong cách practice-first.
-
-Nguyên tắc:
-- Bắt đầu bằng production scenario, không bắt đầu bằng lý thuyết.
-- Đưa lab trước, chia thành task nhỏ.
-- Mỗi bước chỉ hỏi tôi 1 câu hỏi.
-- Nếu tôi sai, chỉ rõ sai ở đâu, giải thích WHY ngắn gọn, rồi cho tôi sửa.
-- Không đưa full solution trừ khi tôi yêu cầu.
-- Luôn bắt tôi verify bằng command, không đoán.
-- Luôn có allowed test, denied test, wrong-scope test.
-- Sau mỗi task, tổng kết concept production và lỗi người mới.
-
-Phạm vi D1:
-- RBAC: Role, RoleBinding, ClusterRole, ClusterRoleBinding.
-- ServiceAccount và khác biệt với User.
-- kubectl auth can-i.
-- OPA/Rego mindset.
-- Gatekeeper: ConstraintTemplate vs Constraint.
-- ValidatingAdmissionPolicy K8s 1.30+ với CEL.
-- Audit/Warn/Deny rollout.
-- Kyverno như alternative.
-
-Bắt đầu với một lab RBAC:
-- namespace dev
-- dev-user được CRUD pods/deployments trong dev
-- dev-user không được tạo secrets/services
-- dev-user không được tạo deployment trong prod
-- workload dùng ServiceAccount webapp-sa
-
-Hãy hỏi tôi câu hỏi đầu tiên, không đưa đáp án ngay.
-```
+*   **Gatekeeper Controller:** Nhận AdmissionRequests từ API Server, gửi đến OPA engine để đánh giá dựa trên các policy đã nạp, sau đó trả về kết quả đồng ý/từ chối.
+*   **Audit Controller:** Quét bất đồng bộ các tài nguyên hiện có trong Cluster để phát hiện các tài nguyên vi phạm policy mới được áp dụng.
+
+### 3.3. ConstraintTemplate vs Constraint
+Gatekeeper tách biệt logic kiểm tra và tham số cấu hình thành 2 Custom Resource Definitions (CRDs):
+
+1.  **ConstraintTemplate:**
+    *   Chứa **logic kiểm tra (Rego code)**.
+    *   Định nghĩa Schema cho các tham số (parameters) truyền vào qua OpenAPI v3 schema.
+    *   Nó giống như một "hàm" hoặc "class" định nghĩa logic chung.
+2.  **Constraint:**
+    *   Là một **thể hiện (instance)** của `ConstraintTemplate`.
+    *   Truyền các giá trị thực tế cho tham số (ví dụ: danh sách các registries được phép).
+    *   Chỉ định phạm vi áp dụng (ví dụ: áp dụng cho Namespace nào, Resource type nào thông qua selectors).
+
+*Ưu điểm:* Tái sử dụng cao. Lập trình viên DevOps viết Rego một lần trong `ConstraintTemplate`, Security Engineer có thể tạo hàng chục `Constraint` với các tham số khác nhau mà không cần biết viết code Rego.
+
+---
+
+## 4. Kyverno
+
+### 4.1. Kiến trúc & Triết lý thiết kế (Kubernetes-native)
+Khác với Gatekeeper (phải học ngôn ngữ Rego mới), **Kyverno** được thiết kế dành riêng cho Kubernetes (Kubernetes-native).
+*   **Không có ngôn ngữ mới:** Chính sách được viết hoàn toàn bằng **YAML** chuẩn, sử dụng các cú pháp biểu thức so sánh quen thuộc với Kubernetes manifests.
+*   **Chức năng mở rộng:** Không chỉ **Validate** (xác thực), Kyverno còn có thể:
+    *   **Mutate:** Tự động chỉnh sửa/bổ sung cấu hình (ví dụ: tự động chèn Sidecar container hoặc thêm label).
+    *   **Generate:** Tự động tạo tài nguyên mới khi có tài nguyên khác xuất hiện (ví dụ: khi tạo một Namespace mới, Kyverno sẽ tự động tạo kèm NetworkPolicy, LimitRange, Secret sao chép từ namespace gốc).
+    *   **Verify Images:** Tích hợp với **Cosign** để xác thực chữ ký số của container image nhằm chống giả mạo chuỗi cung ứng phần mềm (Software Supply Chain Security).
+
+### 4.2. Cấu trúc Policy trong Kyverno
+Kyverno hỗ trợ 2 scope chính:
+*   `ClusterPolicy`: Áp dụng trên toàn bộ Cluster.
+*   `Policy`: Chỉ áp dụng trong một Namespace nhất định.
+
+Mỗi Policy bao gồm một hoặc nhiều **Rules**. Mỗi rule chứa:
+*   `match`/`exclude`: Xác định đối tượng áp dụng.
+*   Hành động: `validate`, `mutate`, `generate`, hoặc `verifyImages`.
+
+---
+
+## 5. ValidatingAdmissionPolicy (VAP) - Native K8s (1.30+ GA)
+
+### 5.1. Tổng quan & Sự dịch chuyển sang Native Admission Control
+*   **Bối cảnh:** Cả Gatekeeper và Kyverno đều dựa trên cơ chế **Mutating/Validating Admission Webhooks**. Điều này có nghĩa là API Server phải gửi HTTPS request ra ngoài đến Webhook Server (Controller của Gatekeeper/Kyverno).
+*   **Vấn đề của Webhooks:**
+    *   **Latency:** Độ trễ mạng làm chậm tốc độ xử lý của API Server.
+    *   **Fail-Open vs Fail-Closed:** Nếu Webhook Server bị sập (down):
+        *   *Fail-Open (Ignore):* Cho phép bỏ qua kiểm tra bảo mật (lỗ hổng lớn).
+        *   *Fail-Closed (Fail):* Chặn toàn bộ việc deploy ứng dụng (gây downtime cho CI/CD).
+    *   **Phức tạp trong vận hành:** Phải tự quản lý chứng chỉ SSL/TLS giữa API Server và Webhook, xử lý bài toán HA (High Availability) cho Webhook Pods.
+
+Từ bản **Kubernetes 1.30**, **ValidatingAdmissionPolicy (VAP)** chính thức đạt trạng thái **GA (General Availability)**. VAP cho phép viết policy và thực thi **trực tiếp bên trong API Server** mà không cần gọi Webhook bên ngoài.
+
+### 5.2. Ngôn ngữ CEL (Common Expression Language)
+VAP sử dụng **CEL (Common Expression Language)** của Google để viết các biểu thức kiểm tra logic.
+*   CEL cực kỳ nhẹ, thực thi nhanh và an sau (không bị lặp vô hạn, không tiêu tốn bộ nhớ vô tội vạ).
+*   Ví dụ một biểu thức CEL đơn giản kiểm tra replicas tối đa:
+    `object.spec.replicas <= 5`
+
+### 5.3. ValidatingAdmissionPolicy vs ValidatingAdmissionPolicyBinding
+Tương tự như Gatekeeper, VAP chia làm 2 phần:
+1.  **ValidatingAdmissionPolicy:** Định nghĩa logic kiểm tra bằng biểu thức CEL và khai báo các tham số đầu vào (Parameter).
+2.  **ValidatingAdmissionPolicyBinding:** Liên kết policy trên với các đối tượng cụ thể (Namespaces, Resource Types) và truyền tham số, đồng thời xác định hành động khi vi phạm (`Deny`, `Warn`, `Audit`).
+
+---
+
+## 6. Bảng so sánh Chi tiết: Gatekeeper vs Kyverno vs ValidatingAdmissionPolicy
+
+| Tiêu chí | OPA Gatekeeper | Kyverno | ValidatingAdmissionPolicy (VAP) |
+| :--- | :--- | :--- | :--- |
+| **Kiến trúc** | Out-of-process Webhook | Out-of-process Webhook | In-process (Native API Server) |
+| **Hiệu năng (Latency)** | Trung bình (do mạng & OPA Engine) | Trung bình (do mạng & Kyverno Engine) | **Cực cao** (Không tốn network roundtrip) |
+| **Độ tin cậy (Downtime)** | Phụ thuộc vào Webhook Pod | Phụ thuộc vào Webhook Pod | **Cực cao** (Chạy trực tiếp trên control plane) |
+| **Ngôn ngữ viết Policy** | **Rego** (Khó học, mạnh mẽ) | **YAML** (Dễ học, trực quan) | **CEL** (Dễ học, hiệu năng cao) |
+| **Tính năng chính** | Validate, Audit | Validate, Mutate, Generate, Verify Image | **Chỉ Validate** (Tính năng Mutate đang phát triển riêng) |
+| **Độ phức tạp vận hành** | Cao (Cài đặt CRDs, Webhook HA, SSL/TLS certificates) | Trung bình (Cài đặt Kyverno Controller, Webhook HA, Certs) | **Cực thấp** (Bật sẵn trên K8s 1.30+, cấu hình bằng YAML cơ bản) |
+| **Mức độ phổ biến** | Rất cao (De facto standard lâu năm) | Rất cao (Được CNCF ưu chuộng cho Cloud Native) | Đang tăng trưởng cực nhanh (Xu hướng tương lai) |
+
+---
+
+## 7. Khuyến nghị Kiến trúc & Bảo mật từ Production-Ready Engineer
+Khi xây dựng hệ thống Kubernetes lớn ở môi trường Enterprise/Production:
+
+1.  **Sử dụng VAP làm Lớp Bảo vệ Đầu tiên (First Line of Defense):**
+    *   Với các rule validate cơ bản (như ép buộc labels, chặn container chạy quyền root, giới hạn port, kiểm tra replicas...), hãy luôn ưu tiên **ValidatingAdmissionPolicy** vì hiệu năng vượt trội và không lo sập webhook.
+2.  **Sử dụng Kyverno hoặc Gatekeeper cho các Nghiệp vụ Nâng cao:**
+    *   Nếu cần tự động tiêm cấu hình (Mutating - như inject sidecar Linkerd/Istio, inject proxy credentials), tự động cấp phát tài nguyên khi tạo namespace (Generating), hoặc xác thực chữ ký ảnh (Cosign), hãy sử dụng **Kyverno**.
+    *   Nếu doanh nghiệp của bạn đã chuẩn hóa toàn bộ hạ tầng (gồm cả Cloud, Terraform, Envoy, K8s) trên OPA Engine thì **Gatekeeper** là lựa chọn thống nhất tốt nhất để quản lý central policy.
+3.  **Chiến lược Fail-Closed cho Môi trường Cực kỳ Bảo mật:**
+    *   Nếu buộc phải dùng Webhooks (Gatekeeper/Kyverno), hãy cấu hình `failurePolicy: Fail` ở phía Webhook Configuration. Hãy chuẩn bị tối thiểu 3 replicas cho webhook pods trên các Node khác nhau (`podAntiAffinity`) và cấu hình Resource Requests/Limits đầy đủ để tránh OPA/Kyverno Webhook bị Out Of Memory (OOM) giết chết làm nghẽn toàn bộ Cluster.

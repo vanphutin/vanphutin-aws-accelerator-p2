@@ -1,429 +1,302 @@
-# D1 - Commands Cheat Sheet
+# Hướng Dẫn Thực Hành: CLI Commands & Manifests (RBAC, Gatekeeper, Kyverno, VAP)
 
-File này gồm các lệnh cần thiết để thực hành và verify D1. Chạy từng nhóm, không paste tất cả một lúc. Production engineer không bắn pháo hoa trong terminal.
+Tài liệu này cung cấp các câu lệnh CLI cần thiết và các Kubernetes Manifests hoàn chỉnh (Production-ready) để triển khai và kiểm tra RBAC, OPA Gatekeeper, Kyverno và ValidatingAdmissionPolicy.
 
-## 0. Kiểm Tra Context
+---
 
-```bash
-kubectl config current-context
-kubectl cluster-info
-kubectl version
-kubectl get nodes
-```
+## 1. Kiểm tra & Giám sát RBAC (RBAC Inspection & Auditing)
 
-Kiểm tra API resources:
+### 1.1. Kiểm tra quyền tự phục vụ (Self-authorization query)
+Sử dụng `kubectl auth can-i` để tự kiểm tra quyền của User hiện tại hoặc ServiceAccount khác.
 
 ```bash
-kubectl api-resources | grep -E "pods|deployments|roles|rolebindings|validatingadmission"
-kubectl api-versions | grep -E "apps|rbac.authorization.k8s.io|admissionregistration.k8s.io"
+# Kiểm tra xem tài khoản hiện tại có được quyền tạo Deployments không
+kubectl auth can-i create deployments
+
+# Kiểm tra xem có được quyền đọc Secrets trong namespace "default" không
+kubectl auth can-i get secrets --namespace default
+
+# Kiểm tra mạo danh (Impersonate) quyền của một ServiceAccount cụ thể
+kubectl auth can-i get secrets \
+  --as=system:serviceaccount:staging:app-serviceaccount \
+  --namespace staging
+
+# Kiểm tra quyền thực hiện một hành động cụ thể trên một resource cụ thể
+kubectl auth can-i delete pods/log --namespace production
 ```
 
-Windows PowerShell alternative:
-
-```powershell
-kubectl api-resources | Select-String "pods|deployments|roles|rolebindings|validatingadmission"
-kubectl api-versions | Select-String "apps|rbac.authorization.k8s.io|admissionregistration.k8s.io"
-```
-
-## 1. Namespace
+### 1.2. Liệt kê và quét quyền hạn trong Cluster
+Sử dụng CLI để truy xuất thông tin phân quyền.
 
 ```bash
-kubectl create namespace dev
-kubectl create namespace prod
-kubectl get namespaces
+# Liệt kê tất cả các RoleBinding trong tất cả các Namespace kèm Role mà chúng liên kết
+kubectl get rolebindings,clusterrolebindings --all-namespaces \
+  -o custom-columns='NAMESPACE:.metadata.namespace,BINDING-NAME:.metadata.name,ROLE-KIND:.roleRef.kind,ROLE-NAME:.roleRef.name'
+
+# Quét xem ai đang giữ quyền cluster-admin (quyền tối cao)
+kubectl get clusterrolebindings -o json | jq -r '.items[] | select(.roleRef.name=="cluster-admin") | .metadata.name, .subjects'
 ```
 
-Nếu đã có YAML:
+### 1.3. Sử dụng công cụ bên thứ ba (RBAC audit tools)
+Các DevOps Engineer thường dùng `kubectl-who-can` (plugin cài qua Krew) hoặc `rbac-lookup` để tìm mối nguy hiểm.
 
 ```bash
-kubectl apply -f rbac/namespace-dev.yaml
+# Cài đặt qua Krew
+kubectl krew install who-can
+
+# Kiểm tra xem những ai (User/Group/SA) có quyền xóa (delete) Nodes
+kubectl who-can delete nodes
+
+# Kiểm tra xem những ai có quyền "impersonate" (mạo danh) trong cluster
+kubectl who-can impersonate users
 ```
 
-## 2. RBAC Apply Và Inspect
+---
 
-Apply RBAC manifests:
+## 2. OPA Gatekeeper: Thực hành
 
+### 2.1. Cài đặt Gatekeeper qua Helm Chart
 ```bash
-kubectl apply -f rbac/dev-deployer-role.yaml
-kubectl apply -f rbac/dev-user-rolebinding.yaml
-kubectl apply -f rbac/webapp-serviceaccount.yaml
-```
-
-Hoặc apply cả folder:
-
-```bash
-kubectl apply -f rbac/
-```
-
-Inspect:
-
-```bash
-kubectl get role -n dev
-kubectl describe role dev-deployer -n dev
-kubectl get rolebinding -n dev
-kubectl describe rolebinding dev-user-deployer -n dev
-kubectl get serviceaccount -n dev
-kubectl describe serviceaccount webapp-sa -n dev
-```
-
-## 3. RBAC Verification Bằng can-i
-
-Allowed path:
-
-```bash
-kubectl auth can-i create pods --namespace dev --as dev-user
-kubectl auth can-i create deployments --namespace dev --as dev-user
-kubectl auth can-i get deployments --namespace dev --as dev-user
-kubectl auth can-i patch deployments --namespace dev --as dev-user
-kubectl auth can-i delete deployments --namespace dev --as dev-user
-```
-
-Expected:
-
-```text
-yes
-```
-
-Denied resource:
-
-```bash
-kubectl auth can-i create secrets --namespace dev --as dev-user
-kubectl auth can-i create services --namespace dev --as dev-user
-kubectl auth can-i create configmaps --namespace dev --as dev-user
-```
-
-Expected:
-
-```text
-no
-```
-
-Wrong namespace:
-
-```bash
-kubectl auth can-i create deployments --namespace prod --as dev-user
-kubectl auth can-i delete pods --namespace prod --as dev-user
-```
-
-Expected:
-
-```text
-no
-```
-
-List all permissions in namespace:
-
-```bash
-kubectl auth can-i --list --namespace dev --as dev-user
-```
-
-ServiceAccount impersonation:
-
-```bash
-kubectl auth can-i list pods -n dev --as system:serviceaccount:dev:webapp-sa
-```
-
-Note: bạn cần có quyền impersonation để `--as` hoạt động.
-
-## 4. Workload Dùng ServiceAccount
-
-Kiểm tra ServiceAccount trong Deployment/Pod:
-
-```bash
-kubectl get pod -n dev -o wide
-kubectl get pod <pod-name> -n dev -o jsonpath="{.spec.serviceAccountName}"
-```
-
-PowerShell:
-
-```powershell
-kubectl get pod <pod-name> -n dev -o jsonpath="{.spec.serviceAccountName}"
-```
-
-Expected:
-
-```text
-webapp-sa
-```
-
-## 5. Gatekeeper Install
-
-Cài đặt Gatekeeper release theo official docs hiện tại:
-
-```bash
-kubectl apply -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper/v3.22.2/deploy/gatekeeper.yaml
-```
-
-Kiểm tra:
-
-```bash
-kubectl get ns gatekeeper-system
-kubectl get pods -n gatekeeper-system
-kubectl wait --for=condition=Ready pod -l control-plane=controller-manager -n gatekeeper-system --timeout=180s
-kubectl get crd | grep gatekeeper
-```
-
-PowerShell:
-
-```powershell
-kubectl get crd | Select-String gatekeeper
-```
-
-Helm alternative:
-
-```bash
+# Thêm Gatekeeper Helm repository
 helm repo add gatekeeper https://open-policy-agent.github.io/gatekeeper/charts
-helm install gatekeeper/gatekeeper --name-template=gatekeeper --namespace gatekeeper-system --create-namespace
-```
 
-## 6. Gatekeeper Policy Apply
-
-Apply ConstraintTemplate:
-
-```bash
-kubectl apply -f policies/gatekeeper/require-limits-template.yaml
-kubectl apply -f policies/gatekeeper/disallow-latest-template.yaml
-```
-
-Apply Constraint ở dryrun trước:
-
-```bash
-kubectl apply -f policies/gatekeeper/require-limits-dryrun.yaml
-kubectl apply -f policies/gatekeeper/disallow-latest-dryrun.yaml
-```
-
-List constraints:
-
-```bash
-kubectl get constraints
-kubectl describe <constraint-kind> <constraint-name>
-```
-
-Chuyển sang deny:
-
-```bash
-kubectl apply -f policies/gatekeeper/require-limits-deny.yaml
-kubectl apply -f policies/gatekeeper/disallow-latest-deny.yaml
-```
-
-## 7. Test Admission Policy: Resource Limits
-
-Server dry-run trước khi apply thật:
-
-```bash
-kubectl apply --dry-run=server -f manifests/bad-pod-no-limits.yaml
-kubectl apply --dry-run=server -f manifests/good-pod-with-limits.yaml
-```
-
-Apply bad manifest:
-
-```bash
-kubectl apply -f manifests/bad-pod-no-limits.yaml
-```
-
-Expected khi enforce:
-
-```text
-Error from server ... admission webhook ... denied the request
-```
-
-Chứng minh Pod không tồn tại:
-
-```bash
-kubectl get pod bad-pod -n dev
-kubectl get pods -n dev
-```
-
-Apply good manifest:
-
-```bash
-kubectl apply -f manifests/good-pod-with-limits.yaml
-kubectl get pod good-pod -n dev
-kubectl describe pod good-pod -n dev
-```
-
-Cleanup:
-
-```bash
-kubectl delete pod good-pod -n dev
-```
-
-## 8. Test Admission Policy: Image latest
-
-Bad:
-
-```bash
-kubectl apply --dry-run=server -f manifests/latest-pod.yaml
-kubectl apply -f manifests/latest-pod.yaml
-```
-
-Expected:
-
-```text
-reject nếu image: nginx:latest
-```
-
-Good:
-
-```bash
-kubectl apply --dry-run=server -f manifests/pinned-image-pod.yaml
-kubectl apply -f manifests/pinned-image-pod.yaml
-kubectl get pod pinned-image-pod -n dev
-```
-
-Cleanup:
-
-```bash
-kubectl delete pod pinned-image-pod -n dev
-```
-
-## 9. ValidatingAdmissionPolicy: Approved Registry
-
-Kiểm tra Kubernetes version:
-
-```bash
-kubectl version
-kubectl api-resources | grep ValidatingAdmissionPolicy
-```
-
-PowerShell:
-
-```powershell
-kubectl api-resources | Select-String ValidatingAdmissionPolicy
-```
-
-Apply policy:
-
-```bash
-kubectl apply -f policies/vap/approved-registry-policy.yaml
-```
-
-Apply binding ở Warn + Audit trước:
-
-```bash
-kubectl apply -f policies/vap/approved-registry-binding-audit.yaml
-```
-
-Test image ngoài approved registry:
-
-```bash
-kubectl apply --dry-run=server -f manifests/dockerhub-nginx-pod.yaml
-```
-
-Chuyển sang Deny:
-
-```bash
-kubectl apply -f policies/vap/approved-registry-binding-deny.yaml
-```
-
-Test lại:
-
-```bash
-kubectl apply --dry-run=server -f manifests/dockerhub-nginx-pod.yaml
-```
-
-Expected:
-
-```text
-dockerhub-nginx-pod -> reject khi Deny
-ecr-approved-pod   -> allow nếu image startsWith approved ECR prefix
-```
-
-Inspect:
-
-```bash
-kubectl get validatingadmissionpolicy
-kubectl get validatingadmissionpolicybinding
-kubectl describe validatingadmissionpolicy <policy-name>
-kubectl describe validatingadmissionpolicybinding <binding-name>
-```
-
-## 10. Kyverno Alternative Commands
-
-Cài đặt Kyverno bằng Helm:
-
-```bash
-helm repo add kyverno https://kyverno.github.io/kyverno/
+# Cập nhật repo
 helm repo update
-helm install kyverno kyverno/kyverno -n kyverno --create-namespace
+
+# Triển khai Gatekeeper lên cluster (Namespace: gatekeeper-system)
+helm install gatekeeper gatekeeper/gatekeeper \
+  --namespace gatekeeper-system \
+  --create-namespace \
+  --set replicaCount=3 \
+  --set auditInterval=60
 ```
 
-Kiểm tra:
+### 2.2. Manifest: ConstraintTemplate & Constraint (Ví dụ bắt buộc Container phải có Resource Limits)
+
+#### Bước 1: Tạo ConstraintTemplate (`template-require-limits.yaml`)
+Logic kiểm tra bằng Rego để đảm bảo mọi container đều có config memory limit.
+
+```yaml
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8scontainerexistlimits
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sContainerExistLimits
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8scontainerexistlimits
+
+        violation[{"msg": msg}] {
+          general_violation(msg)
+        }
+
+        general_violation(msg) {
+          container := input.review.object.spec.template.spec.containers[_]
+          not container.resources.limits.memory
+          msg := sprintf("Container <%v> does not have memory limits defined.", [container.name])
+        }
+```
+
+#### Bước 2: Tạo Constraint (`constraint-require-limits.yaml`)
+Áp dụng Template trên cho các Deployments trong namespace `production`.
+
+```yaml
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sContainerExistLimits
+metadata:
+  name: deployments-must-have-memory-limits
+spec:
+  match:
+    kinds:
+      - apiGroups: ["apps"]
+        kinds: ["Deployment"]
+    namespaces:
+      - "production"
+```
+
+### 2.3. Lệnh kiểm tra vi phạm (Audit & Logs)
+```bash
+# Áp dụng template và constraint
+kubectl apply -f template-require-limits.yaml
+kubectl apply -f constraint-require-limits.yaml
+
+# Xem danh sách vi phạm (Violations) do Audit Controller phát hiện
+kubectl get k8scontainerexistlimits deployments-must-have-memory-limits -o yaml
+```
+
+---
+
+## 3. Kyverno: Thực hành
+
+### 3.1. Cài đặt Kyverno qua Helm
+```bash
+# Thêm Kyverno Helm repository
+helm repo add kyverno https://kyverno.github.io/kyverno/
+
+# Cập nhật repo
+helm repo update
+
+# Cài đặt Kyverno
+helm install kyverno kyverno/kyverno \
+  --namespace kyverno \
+  --create-namespace \
+  --set admissionController.replicas=3
+```
+
+### 3.2. Manifest: ClusterPolicy (Ngăn chặn Container chạy với quyền Root và bắt buộc Read-only Root Filesystem)
+Đây là một policy bảo mật chuẩn sản xuất (production-ready).
+
+```yaml
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-root-and-require-readonly-fs
+  annotations:
+    policies.kyverno.io/title: Secure Containers Only
+    policies.kyverno.io/category: Pod Security Standards
+    policies.kyverno.io/severity: High
+    policies.kyverno.io/description: >-
+      Containers must run as non-root user and root filesystem must be read-only.
+spec:
+  validationFailureAction: Enforce  # Enforce = Chặn cứng, Audit = Chỉ ghi log cảnh báo
+  background: true
+  rules:
+    - name: check-run-as-non-root
+      match:
+        any:
+        - resources:
+            kinds:
+              - Pod
+      validate:
+        message: "Running as root user is prohibited. Please set securityContext.runAsNonRoot to true."
+        pattern:
+          spec:
+            securityContext:
+              runAsNonRoot: true
+    - name: check-readonly-root-filesystem
+      match:
+        any:
+        - resources:
+            kinds:
+              - Pod
+      validate:
+        message: "Root filesystem must be read-only. Please set securityContext.readOnlyRootFilesystem to true."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  readOnlyRootFilesystem: true
+```
+
+### 3.3. Kiểm tra Policy bằng Kyverno CLI (Local testing)
+Để tránh ảnh hưởng đến cluster, bạn có thể kiểm tra offline policy bằng CLI.
 
 ```bash
-kubectl get pods -n kyverno
-kubectl get crd | grep kyverno
+# Tải Kyverno CLI
+# Trên Windows (Powershell):
+# Invoke-WebRequest -Uri https://github.com/kyverno/kyverno/releases/download/v1.12.0/kyverno-cli_v1.12.0_windows_x86_64.zip -OutFile kyverno.zip
+
+# Lệnh kiểm tra Resource YAML offline với Policy file
+kyverno apply /path/to/policy.yaml --resource /path/to/resource-manifest.yaml
 ```
 
-PowerShell:
+---
 
-```powershell
-kubectl get crd | Select-String kyverno
-```
+## 4. ValidatingAdmissionPolicy (VAP): Thực hành (K8s 1.30+)
 
-Apply Kyverno policy nếu dùng alternative:
+### 4.1. Kiểm tra tính năng VAP trên Cluster
+Từ Kubernetes 1.30, VAP đã được bật sẵn mặc định ở trạng thái GA. Hãy chạy lệnh này để kiểm tra xem API Server đã hỗ trợ tài nguyên VAP chưa:
 
 ```bash
-kubectl apply -f policies/kyverno/
+kubectl api-resources | grep validatingadmissionpolicy
+```
+*Kết quả mong đợi:*
+`validatingadmissionpolicies       admissionregistration.k8s.io/v1 ...`
+
+### 4.2. Manifest: ValidatingAdmissionPolicy & Binding (Sử dụng CEL)
+Ví dụ sau sẽ tạo một chính sách bằng CEL: **Chỉ cho phép replicas tối đa là 3 đối với Deployments trong môi trường staging**.
+
+#### Bước 1: Tạo Policy Định nghĩa (`vap-max-replicas.yaml`)
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: max-replicas-policy
+spec:
+  failurePolicy: Fail  # Chặn request nếu có lỗi xử lý xảy ra
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["deployments"]
+  variables:
+    - name: maxAllowed
+      expression: "3"
+  validations:
+    - expression: "object.spec.replicas <= double(variables.maxAllowed)"
+      messageExpression: "'Replicas count (' + string(object.spec.replicas) + ') exceeds the limit of ' + string(variables.maxAllowed)"
 ```
 
-## 11. Debug Commands
-
-Kiểm tra event:
-
-```bash
-kubectl get events -n dev --sort-by=.lastTimestamp
+#### Bước 2: Tạo Binding Liên kết (`vap-max-replicas-binding.yaml`)
+```yaml
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: max-replicas-policy-binding
+spec:
+  policyName: max-replicas-policy
+  validationActions: [Deny]  # Deny = Chặn cứng, Warn = Đưa cảnh báo nhưng vẫn cho tạo, Audit = Lưu audit logs
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        environment: staging
 ```
 
-Describe object:
+### 4.3. Kiểm thử hoạt động của VAP
+1. Gán label `environment=staging` cho namespace kiểm thử:
+   ```bash
+   kubectl create namespace test-staging
+   kubectl label namespace test-staging environment=staging
+   ```
 
-```bash
-kubectl describe pod <pod-name> -n dev
-```
+2. Áp dụng chính sách:
+   ```bash
+   kubectl apply -f vap-max-replicas.yaml
+   kubectl apply -f vap-max-replicas-binding.yaml
+   ```
 
-Admission dry-run:
+3. Thử deploy một Deployment có replicas = 5 vào namespace `test-staging` (`test-deploy.yaml`):
+   ```yaml
+   apiVersion: apps/v1
+   kind: Deployment
+   metadata:
+     name: web-app
+     namespace: test-staging
+   spec:
+     replicas: 5
+     selector:
+       matchLabels:
+         app: web
+     template:
+       metadata:
+         labels:
+           app: web
+       spec:
+         containers:
+         - name: nginx
+           image: nginx:alpine
+   ```
 
-```bash
-kubectl apply --dry-run=server -f <manifest.yaml>
-```
+   Chạy lệnh:
+   ```bash
+   kubectl apply -f test-deploy.yaml
+   ```
 
-Check YAML server-side:
-
-```bash
-kubectl diff -f <manifest.yaml>
-```
-
-## 12. Cleanup
-
-Delete test pods:
-
-```bash
-kubectl delete pod bad-pod good-pod latest-pod pinned-image-pod -n dev --ignore-not-found
-```
-
-Delete policies:
-
-```bash
-kubectl delete -f policies/vap/ --ignore-not-found
-kubectl delete -f policies/gatekeeper/ --ignore-not-found
-```
-
-Delete RBAC lab:
-
-```bash
-kubectl delete namespace dev --ignore-not-found
-kubectl delete namespace prod --ignore-not-found
-```
-
-Uninstall Gatekeeper prebuilt:
-
-```bash
-kubectl delete -f https://raw.githubusercontent.com/open-policy-agent/gatekeeper/v3.22.2/deploy/gatekeeper.yaml
-```
-
-Uninstall Kyverno Helm:
-
-```bash
-helm uninstall kyverno -n kyverno
-kubectl delete namespace kyverno --ignore-not-found
-```
+   *Kết quả lỗi trả về từ API Server:*
+   `Error from server (Forbidden): error when creating "test-deploy.yaml": deployments.apps "web-app" is forbidden: ValidatingAdmissionPolicy 'max-replicas-policy' with binding 'max-replicas-policy-binding' denied request: Replicas count (5) exceeds the limit of 3`
